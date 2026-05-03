@@ -1,0 +1,16 @@
+# === Database ===
+sqlalchemy>=2.0
+
+# === LLM API (Groq) ===
+requests>=2.31
+
+# === Embedding + Vector DB ===
+chromadb>=0.4
+
+# === UI ===
+streamlit>=1.30
+plotly>=5.18
+pandas>=2.0
+
+# === Testing ===
+pytest>=7.0

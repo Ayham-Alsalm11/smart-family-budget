@@ -1,0 +1,181 @@
+sentence,expected_type,actual_type,type_correct,expected_amount,actual_amount,amount_correct,expected_category,actual_category,category_correct,status
+دفعت 5000 بنزين,expense,expense,True,5000.0,5000.0,True,بنزين ومواصلات,بنزين ومواصلات,True,✅
+اشتريت خضرا بـ 3000,expense,expense,True,3000.0,3000.0,True,أكل وشرب,أكل وشرب,True,✅
+فاتورة الكهربا 15000,expense,expense,True,15000.0,15000.0,True,فواتير,فواتير,True,✅
+رحت عالدكتور دفعت 20 ألف,expense,expense,True,20000.0,20000.0,True,صحة,صحة,True,✅
+دفعت إيجار البيت 150 ألف,expense,expense,True,150000.0,150000.0,True,إيجار,إيجار,True,✅
+اشتريت شي من الدكان بخمس تلاف,expense,error,False,5000.0,,False,أكل وشرب,,False,❌
+أخدت تكسي بألفين,expense,error,False,2000.0,,False,بنزين ومواصلات,,False,❌
+دفعت أقساط الجامعة 50 ألف,expense,error,False,50000.0,,False,تعليم,,False,❌
+اشتريت لحمة بـ 8000,expense,error,False,8000.0,,False,أكل وشرب,,False,❌
+دفعت فاتورة الموبايل 5000,expense,error,False,5000.0,,False,فواتير,,False,❌
+اشتريت جاكيت بـ 25000,expense,error,False,25000.0,,False,ملابس,,False,❌
+رحنا عالسينما دفعت 10000,expense,error,False,10000.0,,False,ترفيه,,False,❌
+حطيت جنب 50 ألف ادخار,expense,error,False,50000.0,,False,ادخار,,False,❌
+اشتريت هدية لصاحبي بـ 15000,expense,error,False,15000.0,,False,هدايا ومناسبات,,False,❌
+جاني السباك أخد 20 ألف,expense,error,False,20000.0,,False,صيانة,,False,❌
+دفعت حق الباص 500,expense,error,False,500.0,,False,بنزين ومواصلات,,False,❌
+اشتريت فلافل بألف,expense,error,False,1000.0,,False,أكل وشرب,,False,❌
+فاتورة النت 12000,expense,error,False,12000.0,,False,فواتير,,False,❌
+دفعت للصيدلية 7000,expense,error,False,7000.0,,False,صحة,,False,❌
+اشتريت كتب للجامعة بـ 10000,expense,error,False,10000.0,,False,تعليم,,False,❌
+دفعت حق الكافيه 3000,expense,error,False,3000.0,,False,ترفيه,,False,❌
+اشتريت بنطلون بـ 18000,expense,error,False,18000.0,,False,ملابس,,False,❌
+رحت عالمسبح دفعت 5000,expense,error,False,5000.0,,False,ترفيه,,False,❌
+دفعت قسط المدرسة 100 ألف,expense,error,False,100000.0,,False,تعليم,,False,❌
+اشتريت دوا من الصيدلية بـ 4000,expense,error,False,4000.0,,False,صحة,,False,❌
+عبيت بنزين بعشر تلاف,expense,error,False,10000.0,,False,بنزين ومواصلات,,False,❌
+دفعت فاتورة الماي 3000,expense,error,False,3000.0,,False,فواتير,,False,❌
+اشتريت رز وزيت بـ 6000,expense,error,False,6000.0,,False,أكل وشرب,,False,❌
+أجار الشقة 200 ألف,expense,expense,True,200000.0,200000.0,True,إيجار,إيجار,True,✅
+وفّرت 30 ألف هالشهر,expense,error,False,30000.0,,False,ادخار,,False,❌
+اشتريت حذاء بـ 15000,expense,error,False,15000.0,,False,ملابس,,False,❌
+صلّحت السيارة بـ 35000,expense,error,False,35000.0,,False,صيانة,,False,❌
+دفعت للعرس 25000,expense,error,False,25000.0,,False,هدايا ومناسبات,,False,❌
+اشتريت شاورما بـ 2500,expense,error,False,2500.0,,False,أكل وشرب,,False,❌
+أخدت سرفيس بـ 300,expense,error,False,300.0,,False,بنزين ومواصلات,,False,❌
+دفعت اشتراك النادي 20000,expense,error,False,20000.0,,False,ترفيه,,False,❌
+اشتريت غاز بـ 5000,expense,error,False,5000.0,,False,فواتير,,False,❌
+جبت دكتور للبيت دفعت 30 ألف,expense,error,False,30000.0,,False,صحة,,False,❌
+اشتريت قرطاسية بـ 3000,expense,error,False,3000.0,,False,تعليم,,False,❌
+دهنت الحيطان دفعت 40 ألف,expense,error,False,40000.0,,False,صيانة,,False,❌
+عزمت الشباب دفعت 20000,expense,error,False,20000.0,,False,هدايا ومناسبات,,False,❌
+اشتريت عصير بـ 1500,expense,error,False,1500.0,,False,أكل وشرب,,False,❌
+دفعت تكسي 3000,expense,error,False,3000.0,,False,بنزين ومواصلات,,False,❌
+فاتورة الكهرباء هالشهر 20 ألف,expense,error,False,20000.0,,False,فواتير,,False,❌
+حطيت 100 ألف بالبنك,expense,error,False,100000.0,,False,ادخار,,False,❌
+رحت عأسنان دفعت 25 ألف,expense,error,False,25000.0,,False,صحة,,False,❌
+اشتريت كورس أونلاين بـ 15000,expense,error,False,15000.0,,False,تعليم,,False,❌
+رحت رحلة دفعت 30 ألف,expense,error,False,30000.0,,False,ترفيه,,False,❌
+اشتريت عباية بـ 20000,expense,error,False,20000.0,,False,ملابس,,False,❌
+جاء الكهربائي أخد 10 ألف,expense,error,False,10000.0,,False,صيانة,,False,❌
+دفعت 7000 فواكه,expense,error,False,7000.0,,False,أكل وشرب,,False,❌
+اشتريت هدية عيد بـ 10000,expense,error,False,10000.0,,False,هدايا ومناسبات,,False,❌
+عبيت مازوت بـ 50 ألف,expense,error,False,50000.0,,False,فواتير,,False,❌
+دفعت مصاري الباص الشهري 5000,expense,error,False,5000.0,,False,بنزين ومواصلات,,False,❌
+اشتريت جبنة وحليب بـ 4000,expense,error,False,4000.0,,False,أكل وشرب,,False,❌
+صرفت 15 ألف عالدوا,expense,error,False,15000.0,,False,صحة,,False,❌
+اشتريت تياب العيد بـ 30000,expense,error,False,30000.0,,False,ملابس,,False,❌
+دفعت رسوم الجامعة 75 ألف,expense,error,False,75000.0,,False,تعليم,,False,❌
+دفعت حق النجار 12000,expense,error,False,12000.0,,False,صيانة,,False,❌
+اشتريت خبز ولبنة بـ 2000,expense,expense,True,2000.0,2000.0,True,أكل وشرب,أكل وشرب,True,✅
+أخدت أوبر بـ 4000,expense,error,False,4000.0,,False,بنزين ومواصلات,,False,❌
+فاتورة الهاتف 8000,expense,error,False,8000.0,,False,فواتير,,False,❌
+دفعت أجار المحل 300 ألف,expense,error,False,300000.0,,False,إيجار,,False,❌
+توفير هالشهر 25 ألف,expense,error,False,25000.0,,False,ادخار,,False,❌
+دفعت تحاليل طبية 10 ألف,expense,error,False,10000.0,,False,صحة,,False,❌
+اشتريت ألعاب للولاد بـ 8000,expense,error,False,8000.0,,False,ترفيه,,False,❌
+شريت قميص بـ 12000,expense,error,False,12000.0,,False,ملابس,,False,❌
+جبت سباك صلح الحنفية بـ 8000,expense,error,False,8000.0,,False,صيانة,,False,❌
+دفعت حق الخطوبة 50 ألف,expense,error,False,50000.0,,False,هدايا ومناسبات,,False,❌
+غدا من المطعم بـ 10000,expense,error,False,10000.0,,False,أكل وشرب,,False,❌
+اشتريت بنشر بـ 3000,expense,error,False,3000.0,,False,بنزين ومواصلات,,False,❌
+دفعت فاتورة الاشتراك 6000,expense,error,False,6000.0,,False,فواتير,,False,❌
+إيجار البيت الجديد 250 ألف,expense,error,False,250000.0,,False,إيجار,,False,❌
+وفرت من المعاش 40 ألف,expense,error,False,40000.0,,False,ادخار,,False,❌
+رحت عالمشفى دفعت 50 ألف,expense,error,False,50000.0,,False,صحة,,False,❌
+اشتريت دورة تدريبية بـ 20000,expense,error,False,20000.0,,False,تعليم,,False,❌
+رحت عالكافيه دفعت 5000,expense,error,False,5000.0,,False,ترفيه,,False,❌
+اشتريت جزمة بـ 20000,expense,error,False,20000.0,,False,ملابس,,False,❌
+صلحت الغسالة بـ 15000,expense,error,False,15000.0,,False,صيانة,,False,❌
+هدية عيد الأم 10 ألف,expense,error,False,10000.0,,False,هدايا ومناسبات,,False,❌
+اشتريت سكر وشاي بـ 3000,expense,error,False,3000.0,,False,أكل وشرب,,False,❌
+عبيت بنزين نص تنكة 7000,expense,error,False,7000.0,,False,بنزين ومواصلات,,False,❌
+دفعت كهربا ومي 25 ألف,expense,error,False,25000.0,,False,فواتير,,False,❌
+دفعت أجار الكراج 30 ألف,expense,error,False,30000.0,,False,إيجار,,False,❌
+حطيت جنب 60 ألف,expense,error,False,60000.0,,False,ادخار,,False,❌
+أشعة وتحاليل 15 ألف,expense,error,False,15000.0,,False,صحة,,False,❌
+دفعت كتب ودفاتر 5000,expense,error,False,5000.0,,False,تعليم,,False,❌
+رحت نزهة مع العيلة دفعت 15000,expense,error,False,15000.0,,False,ترفيه,,False,❌
+تياب المدرسة 20 ألف,expense,error,False,20000.0,,False,ملابس,,False,❌
+تصليح البراد 10 ألف,expense,expense,True,10000.0,10000.0,True,صيانة,صيانة,True,✅
+دفعت مصاري العزيمة 30 ألف,expense,error,False,30000.0,,False,هدايا ومناسبات,,False,❌
+فطور من الفرن 2000,expense,error,False,2000.0,,False,أكل وشرب,,False,❌
+مازوت التدفئة 40 ألف,expense,error,False,40000.0,,False,فواتير,,False,❌
+دفعت للدكتور عيون 20 ألف,expense,error,False,20000.0,,False,صحة,,False,❌
+أخدت باص للشغل 200,expense,error,False,200.0,,False,بنزين ومواصلات,,False,❌
+اشتريت فستان بـ 35000,expense,error,False,35000.0,,False,ملابس,,False,❌
+دفعت تمديدات كهربا 25 ألف,expense,error,False,25000.0,,False,صيانة,,False,❌
+وفرت 80 ألف للصيف,expense,error,False,80000.0,,False,ادخار,,False,❌
+دفعت مصاري رحلة المدرسة 5000,expense,error,False,5000.0,,False,تعليم,,False,❌
+عشا بره بـ 12000,expense,error,False,12000.0,,False,أكل وشرب,,False,❌
+تكسي للمطار 15000,expense,error,False,15000.0,,False,بنزين ومواصلات,,False,❌
+فاتورة ستلايت 4000,expense,error,False,4000.0,,False,فواتير,,False,❌
+إيجار المستودع 50 ألف,expense,error,False,50000.0,,False,إيجار,,False,❌
+مناسبة عيد ميلاد 20 ألف,expense,error,False,20000.0,,False,هدايا ومناسبات,,False,❌
+اشتريت زيت زيتون بـ 15000,expense,error,False,15000.0,,False,أكل وشرب,,False,❌
+صلحت الموبايل بـ 10000,expense,error,False,10000.0,,False,صيانة,,False,❌
+دفعت أجرة السرفيس 500,expense,error,False,500.0,,False,بنزين ومواصلات,,False,❌
+كهربا الشهر الماضي 18 ألف,expense,error,False,18000.0,,False,فواتير,,False,❌
+دوا القلب 8000,expense,error,False,8000.0,,False,صحة,,False,❌
+ادخار شهري 45 ألف,expense,error,False,45000.0,,False,ادخار,,False,❌
+اشتريت سبورت للنادي 10000,expense,error,False,10000.0,,False,ملابس,,False,❌
+حفلة تخرج دفعت 40 ألف,expense,error,False,40000.0,,False,هدايا ومناسبات,,False,❌
+اشتريت دجاج ولحمة 12000,expense,error,False,12000.0,,False,أكل وشرب,,False,❌
+غيرت زيت السيارة 5000,expense,expense,True,5000.0,5000.0,True,بنزين ومواصلات,صيانة,False,❌
+فاتورة الغاز 7000,expense,error,False,7000.0,,False,فواتير,,False,❌
+دفعت أجار شهرين 400 ألف,expense,error,False,400000.0,,False,إيجار,,False,❌
+رحت عالعيادة 10 ألف,expense,error,False,10000.0,,False,صحة,,False,❌
+كورس انجليزي 25 ألف,expense,error,False,25000.0,,False,تعليم,,False,❌
+اشتركت بالنادي الرياضي 30 ألف,expense,error,False,30000.0,,False,ترفيه,,False,❌
+نجار صلح الباب 8000,expense,error,False,8000.0,,False,صيانة,,False,❌
+هدية زواج 50 ألف,expense,error,False,50000.0,,False,هدايا ومناسبات,,False,❌
+اشتريت بطيخ بـ 3000,expense,error,False,3000.0,,False,أكل وشرب,,False,❌
+بنزين للمولدة 6000,expense,error,False,6000.0,,False,فواتير,,False,❌
+تحليل دم 5000,expense,error,False,5000.0,,False,صحة,,False,❌
+توفير للعيد 35 ألف,expense,error,False,35000.0,,False,ادخار,,False,❌
+شريت شنطة مدرسة 7000,expense,error,False,7000.0,,False,تعليم,,False,❌
+دفعت حق السينما 6000,expense,error,False,6000.0,,False,ترفيه,,False,❌
+شريت نظارة شمسية 8000,expense,error,False,8000.0,,False,ملابس,,False,❌
+تصليح الباب 5000,expense,error,False,5000.0,,False,صيانة,,False,❌
+عزيمة رمضان 25 ألف,expense,error,False,25000.0,,False,هدايا ومناسبات,,False,❌
+مونة البيت 50 ألف,expense,error,False,50000.0,,False,أكل وشرب,,False,❌
+تبديل عجلات السيارة 20 ألف,expense,error,False,20000.0,,False,بنزين ومواصلات,,False,❌
+فاتورة التلفون الأرضي 3000,expense,error,False,3000.0,,False,فواتير,,False,❌
+دفعت عربون البيت 500 ألف,expense,error,False,500000.0,,False,إيجار,,False,❌
+عملية جراحية 200 ألف,expense,error,False,200000.0,,False,صحة,,False,❌
+دورة برمجة 40 ألف,expense,error,False,40000.0,,False,تعليم,,False,❌
+رحلة آخر السنة 60 ألف,expense,error,False,60000.0,,False,ترفيه,,False,❌
+شريت معطف شتوي 30 ألف,expense,error,False,30000.0,,False,ملابس,,False,❌
+تنظيف الخزان 10 ألف,expense,error,False,10000.0,,False,صيانة,,False,❌
+مصاري العيد للأولاد 15 ألف,expense,error,False,15000.0,,False,هدايا ومناسبات,,False,❌
+اشتريت حلويات رمضان 8000,expense,error,False,8000.0,,False,أكل وشرب,,False,❌
+تأمين السيارة 50 ألف,expense,error,False,50000.0,,False,بنزين ومواصلات,,False,❌
+فاتورة المي الشهرية 2000,expense,error,False,2000.0,,False,فواتير,,False,❌
+ادخار لمشروع جديد 100 ألف,expense,error,False,100000.0,,False,ادخار,,False,❌
+دفعت رسوم امتحان 10 ألف,expense,expense,True,10000.0,10000.0,True,تعليم,تعليم,True,✅
+بوفيه عشا 15 ألف,expense,error,False,15000.0,,False,أكل وشرب,,False,❌
+صيانة دورية للسيارة 25 ألف,expense,error,False,25000.0,,False,بنزين ومواصلات,,False,❌
+اشتراك جيم 6 أشهر 60 ألف,expense,error,False,60000.0,,False,ترفيه,,False,❌
+شريت بيجاما 5000,expense,error,False,5000.0,,False,ملابس,,False,❌
+ترميم الحمام 80 ألف,expense,error,False,80000.0,,False,صيانة,,False,❌
+اشتريت أضحية العيد 150 ألف,expense,error,False,150000.0,,False,هدايا ومناسبات,,False,❌
+قهوة الصبح 500,expense,error,False,500.0,,False,أكل وشرب,,False,❌
+غسيل السيارة 2000,expense,error,False,2000.0,,False,بنزين ومواصلات,,False,❌
+اشتراك OSN 10 ألف,expense,error,False,10000.0,,False,فواتير,,False,❌
+وفرت من الراتب 55 ألف,expense,error,False,55000.0,,False,ادخار,,False,❌
+فحص عيون 8000,expense,error,False,8000.0,,False,صحة,,False,❌
+دفتر وأقلام 1500,expense,error,False,1500.0,,False,تعليم,,False,❌
+لعبة بلايستيشن 20 ألف,expense,error,False,20000.0,,False,ترفيه,,False,❌
+تنورة بـ 10 ألف,expense,error,False,10000.0,,False,ملابس,,False,❌
+تمديدات مي 15 ألف,expense,error,False,15000.0,,False,صيانة,,False,❌
+كم صرفت هالشهر؟,query,error,False,,,False,,,False,❌
+وين رايحة مصاريفي؟,query,error,False,,,False,,,False,❌
+كم دفعت أكل هالشهر؟,query,error,False,,,False,,,False,❌
+شو أكتر فئة صرفت عليها؟,query,error,False,,,False,,,False,❌
+كم باقي من الميزانية؟,query,error,False,,,False,,,False,❌
+قارن مصاريفي مع الشهر الماضي,query,error,False,,,False,,,False,❌
+كم صرفت بنزين؟,query,error,False,,,False,,,False,❌
+شو آخر 5 مصاريف سجلتهم؟,query,error,False,,,False,,,False,❌
+كم وفرت هالشهر؟,query,error,False,,,False,,,False,❌
+هل تجاوزت ميزانية الأكل؟,query,error,False,,,False,,,False,❌
+كيف وفّر؟,advice,error,False,,,False,,,False,❌
+شو نصيحتك لتقليل المصاريف؟,advice,error,False,,,False,,,False,❌
+كيف أقلل مصاريف الأكل؟,advice,error,False,,,False,,,False,❌
+شو الفئات اللي ممكن أخففها؟,advice,error,False,,,False,,,False,❌
+ساعدني أحط خطة توفير,advice,error,False,,,False,,,False,❌
+مرحبا,chat,chat,True,,,False,,,False,✅
+كيفك,chat,error,False,,,False,,,False,❌
+شكراً,chat,error,False,,,False,,,False,❌
+مين أنت؟,chat,error,False,,,False,,,False,❌
+يعطيك العافية,chat,error,False,,,False,,,False,❌
