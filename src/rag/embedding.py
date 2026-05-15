@@ -139,6 +139,17 @@ class EmbeddingEngine:
             )
         return context
 
+    def is_available(self) -> bool:
+        """فحص سريع لـ Ollama بدون embedding كامل"""
+        try:
+            response = requests.get(
+                f"{OLLAMA_BASE_URL}/api/tags",
+                timeout=3
+            )
+            return response.status_code == 200
+        except Exception:
+            return False
+
     def test_connection(self) -> bool:
         """اختبار الاتصال بـ Ollama"""
         try:

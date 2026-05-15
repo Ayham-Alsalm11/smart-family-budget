@@ -18,7 +18,13 @@ CHARTS_DIR = os.path.join(os.path.dirname(__file__), "charts")
 os.makedirs(CHARTS_DIR, exist_ok=True)
 
 
-def find_latest_results():
+def find_latest_results(filename=None):
+    if filename:
+        path = os.path.join(RESULTS_DIR, filename)
+        if os.path.exists(path):
+            return path
+        print(f"❌ الملف غير موجود: {filename}")
+        return None
     csv_files = [f for f in os.listdir(RESULTS_DIR) if f.startswith("eval_results_") and f.endswith(".csv")]
     if not csv_files:
         print("❌ لا توجد نتائج! شغّل eval_extraction.py أولاً")
@@ -267,7 +273,8 @@ def main():
     print("📊 توليد الرسوم البيانية...")
     print("=" * 60)
 
-    results_file = find_latest_results()
+    target = sys.argv[1] if len(sys.argv) > 1 else None
+    results_file = find_latest_results(target)
     if not results_file:
         return
 

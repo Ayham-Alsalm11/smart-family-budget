@@ -47,9 +47,10 @@ def evaluate(parser, test_data):
         expected_amount = item["expected_amount"]
         expected_category = item["expected_category"]
 
-        # تأخير كل 5 جمل لتجنب rate limiting
-        if i > 0 and i % 5 == 0:
-            time.sleep(3)
+        # تأخير بين كل جملة لتجنب rate limiting
+        if i > 0:
+            time.sleep(4)
+        if i > 0 and i % 10 == 0:
             print(f"   ... تم {i}/{total} (أخطاء: {errors_count})")
 
         # استدعاء الـ Parser
@@ -57,9 +58,9 @@ def evaluate(parser, test_data):
             result = parser.parse_expense(sentence)
             actual_type = result.get("type", "error")
 
-            # إذا طلع error، جرّب مرة ثانية بعد انتظار
+            # إذا طلع error، جرّب مرة ثانية بعد انتظار أطول
             if actual_type == "error":
-                time.sleep(5)
+                time.sleep(10)
                 result = parser.parse_expense(sentence)
                 actual_type = result.get("type", "error")
 

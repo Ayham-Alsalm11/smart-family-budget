@@ -1,0 +1,30 @@
+============================================================
+Smart Family Budget Assistant — Evaluation Report
+Date: 2026-05-14 16:59:28
+Total sentences: 180
+Technical errors (timeout): 81
+============================================================
+
+Main Metrics (excluding timeout errors):
+  Type Accuracy:            55.0%
+  Extraction Accuracy:      95.9%
+  Amount Accuracy:          100.0%
+  Category Accuracy:        95.9%
+  Query Accuracy:           5.0%
+
+  Macro Precision:          97.1%
+  Macro Recall:             96.6%
+  Macro F1-Score:           96.8%
+
+F1-Score per Category:
+  ترفيه: P=100.0% R=100.0% F1=100.0%
+  ادخار: P=100.0% R=100.0% F1=100.0%
+  إيجار: P=100.0% R=100.0% F1=100.0%
+  صحة: P=100.0% R=100.0% F1=100.0%
+  هدايا ومناسبات: P=100.0% R=100.0% F1=100.0%
+  تعليم: P=100.0% R=100.0% F1=100.0%
+  أكل وشرب: P=100.0% R=92.9% F1=96.3%
+  بنزين ومواصلات: P=100.0% R=90.9% F1=95.2%
+  ملابس: P=90.0% R=100.0% F1=94.7%
+  فواتير: P=90.9% R=90.9% F1=90.9%
+  صيانة: P=87.5% R=87.5% F1=87.5%

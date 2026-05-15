@@ -18,7 +18,7 @@ class FinancialRetriever:
         # محاولة تشغيل Embedding Engine
         try:
             self.embedding = EmbeddingEngine()
-            self.embedding_available = self.embedding.test_connection()
+            self.embedding_available = self.embedding.is_available()
         except Exception:
             self.embedding = None
             self.embedding_available = False
