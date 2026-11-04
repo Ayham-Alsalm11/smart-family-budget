@@ -107,6 +107,15 @@ def _load_expense(session: Session, ctx: ToolContext, expense_id: int) -> Expens
     return expense
 
 
+def find_goal_id(session: Session, ctx: ToolContext, name: str) -> int:
+    """An active savings goal of the family, by its exact name."""
+    goal_id = session.scalar(select(SavingsGoal.id).where(
+        SavingsGoal.family_id == ctx.family_id, SavingsGoal.name == name, SavingsGoal.status == "active"))
+    if goal_id is None:
+        raise NotFoundError(f"no active savings goal named {name!r}")
+    return goal_id
+
+
 def _check_goal(session: Session, ctx: ToolContext, goal_id: int | None, category: Category) -> int | None:
     if goal_id is None:
         return None
