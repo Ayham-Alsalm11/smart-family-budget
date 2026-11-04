@@ -2,7 +2,7 @@
 
 **Project:** Family Budget Agent (Graduation Project 2)
 **Author:** Ayham Al-Salem · **Supervisors:** Dr. Nasreen Suleiman, Eng. Zainab Baghdadi
-**Version:** 1.2 · 4 November 2026 · **Branch:** `gp2-agent` · Changes since 1.0 are listed in §14.
+**Version:** 1.3 · 4 November 2026 · **Branch:** `gp2-agent` · Changes since 1.0 are listed in §14.
 
 This document turns the methodology of *Report Part 1* (Chapter 4) into a specification that the code is written from. It records every architectural decision taken after Seminar 1. When the code and this document disagree, fix one of them; do not leave them out of sync.
 
@@ -219,7 +219,9 @@ The schema is created with `create_all` in a new database file (`backend/data/fb
 | Create or cancel savings goals | ✅ | ❌ (can contribute and view) |
 | Create invites, remove members, change roles | ✅ | ❌ |
 
-A denied tool call returns `{"ok": false, "error": {"code": "forbidden"}}`. The agent then explains politely that the information is not available to this account. No prompt wording can bypass this, because the check is not in the prompt.
+A denied tool call returns `{"ok": false, "error": {"code": "forbidden"}}`. The agent then explains politely that only the family manager can see this, without asking for names. No prompt wording can bypass this, because the check is not in the prompt.
+
+**Member filters:** for a member, any member filter other than themselves ("me", their own name, username or id) is refused with `forbidden` **before any lookup**, so a member cannot even learn whether a name exists in the family.
 
 ---
 
@@ -247,6 +249,7 @@ flowchart TD
 - At most **6 LLM steps** per message. Several tool calls returned in one step are executed in order.
 - Tool decisions use **temperature 0** (where the model accepts it) and **`reasoning_effort=low`** (§6.3). `max_tokens` = 1024, which includes reasoning tokens.
 - An invalid call (unknown tool, missing or wrong-typed argument) is not executed. The validation error goes back to the model as the tool result and counts as a step.
+- **Rejected by the provider:** Groq checks tool calls against the schemas and rejects a broken one with HTTP 400 `tool_use_failed`. This is not a connection failure. The error goes back to the model in the same turn ("Your last tool call was rejected: … Fix the arguments or omit optional ones"), counts as a step, and is logged in `tool_log` as `invalid_args`. At most **2 corrections** per turn; after that the agent asks the user to rephrase (not "connection problem").
 - `ask_clarification` ends the turn: its `question` is the reply.
 - Each request carries a `ToolContext(family_id, member_id, role, today, model, message_id)`. Tools receive it from the server. It is never part of the tool schemas the LLM sees.
 
@@ -257,22 +260,27 @@ flowchart TD
 - `reasoning_effort` is a setting (`REASONING_EFFORT`, default `low`). In step 4b, `low` cut completion tokens by about 40 % on both models and the tool call stayed correct. That was one sentence only; step 5 confirms it on more examples before it is fixed for the evaluation.
 - Every call records `usage` (prompt, completion and reasoning tokens) in `llm_calls`, because the token budget decides the size of the evaluation (§9.5).
 - **Fallback mode:** if native tool calling proves unreliable for a model, the client switches to a JSON-in-text mode with the same schemas. The loop does not change.
-- Timeout 30 s. Up to 3 retries with exponential backoff and jitter; on HTTP 429, wait for the `retry-after` header when present. Every attempt is written to `llm_calls`. A request that still fails returns a friendly message and is **counted as a failure** in evaluation. A client-side limiter keeps each model under its per-minute token limit, using the `x-ratelimit-*` response headers, so that 429 errors are avoided rather than retried. Report Part 1 (§4.3) allowed a tier with higher limits during evaluation; that is not possible (D14), so the evaluation is planned within the free tier (§9.5).
+- Timeout 30 s. Up to 3 retries with exponential backoff and jitter; on HTTP 429, wait for the `retry-after` header when present. Every attempt is written to `llm_calls`. A request that still fails returns a friendly message and is **counted as a failure** in evaluation. A client-side limiter keeps each model under its per-minute token limit, so that 429 errors are avoided rather than retried. It starts from `x-ratelimit-remaining-tokens` of the last response and Groq's continuous refill (limit ÷ 60 tokens a second), so a request waits only for the missing tokens; before any header it uses a rolling 60 s window. Its estimate is **calibrated per model**: a moving average (weight 0.3) of actual ÷ estimated tokens, plus a 10 % margin (the raw estimate overshot by about 1.7× in step 5a). A `retry-after` longer than 60 s is treated as the daily quota running out. Report Part 1 (§4.3) allowed a tier with higher limits during evaluation; that is not possible (D14), so the evaluation is planned within the free tier (§9.5).
 
 ### 6.4 System prompt (`agent/prompts.py`)
 
-The prompt contains, in this order:
+The prompt is in English, as short as possible (every call pays for it, §9.5), and contains, in this order:
 1. Role: "ميزان", a household budget assistant that replies in the Syrian dialect.
-2. Today's date, the family's base currency and the 12 categories.
-3. Rules:
-   - Never state a number that did not come from a tool result.
-   - Ask instead of guessing when the amount, category, currency or target expense is missing or ambiguous.
-   - Edits and deletions always need confirmation.
-   - Stay within household budgeting; no investment or loan advice.
+2. Today's date, the family's base currency, and the 12 categories, **each listed once with 2–4 short keywords** from `db/categories.py` (e.g. فواتير: كهربا، ماي، نت، اشتراك). The tool schemas carry no category enum (§7.1).
+3. Rules, from the step 5a measurement:
+   - Only numbers and dates that appear in this turn's tool results; no own math, no invented percentages or years.
+   - Currencies are named in Arabic to the user (ليرة قديمة, ليرة جديدة, دولار), never as codes such as `SYP_OLD`.
+   - The category is inferred from the keywords; ask only if it is really unclear ("دفعت 50 لأبو أحمد"), or if the amount is missing.
+   - A dollar amount goes to `add_expense` with `USD`; on `missing_fields: usd_rate`, tell the user the family manager must set the dollar rate first.
+   - To edit or delete a described expense ("آخر مصروف"), find its id with `list_expenses` or `search_expenses` first; ask only if several match. Edits and deletions always need confirmation.
+   - "وزعلي / حسب الفئات" → `get_breakdown`; "كم باقي من الميزانية" → `check_budget`.
+   - "وين / على شو صرفت على X": X is a category → `list_expenses`; otherwise `search_expenses`. Search before asking.
+   - `forbidden` → only the family manager can see this; never ask for names.
+   - Outside household budgeting (requests to transfer or pay money, investment, loans): decline at once, without tools or questions.
 4. Dialect hints carried over from GP1: "تلاف" = thousands, "ألفين" = 2000, "نص مليون" = 500000, "مبارح" = yesterday, "هالشهر" = this month.
-5. Advice policy (D9): for "how can I save?" questions, call `get_insights`, `check_budget`, `compare_months` and `check_savings_goal` first, then advise from those numbers.
+5. Advice policy (D9): for "how can I save?" questions, call `check_budget` and `compare_months` first (`get_insights` and `check_savings_goal` join when Priority 2 exists), then advise only from those numbers.
 6. Up to 3 retrieved past corrections, as examples (§6.7, Priority 3).
-7. A few fixed examples of tool calls. They are written separately and never taken from the test set.
+7. One fixed example of tool calls, written separately and never taken from the test set.
 
 ### 6.5 Confirmation of edits and deletions
 
@@ -309,7 +317,14 @@ The last 10 user/assistant messages of the same member from the last 24 hours, e
 
 ### 6.9 Grounding check
 
-After the final reply, numbers in the text are extracted. Arabic and Western digits and thousands separators are normalised. Each number is checked against the numbers in that turn's tool results. Unmatched numbers are logged as `ungrounded` in `tool_log`. At run time this is only logged; in evaluation it becomes the **grounding rate** metric (§9).
+After the final reply, numbers in the text are extracted and checked against that turn's tool results. Unmatched numbers are logged as `ungrounded` in `tool_log`. At run time this is only logged; in evaluation it becomes the **grounding rate** metric (§9).
+
+**Normalisation and tolerances** (from the step 5a false alarms):
+- Arabic-Indic digits, "," / "٬" and spaces between groups of three digits are normalised ("١٥ ٠٠٠" = 15000). "ألف / آلاف / تلاف / k" multiply by 1,000 and "مليون" by 1,000,000 ("15 ألف", "26k").
+- List numbering at the start of a line ("1." "2)") is ignored.
+- A number is compared with the precision it is shown with, so a rounded value is accepted ("183 ألف" for 182,500; "65%" for 65.4). Signs are compared away, because the reply states the direction in words.
+- A percentage must match a percentage in the results, or the ratio of two numbers of the same result object, within ±0.1 (or the shown precision).
+- A year (2000–2100) is accepted only if a date in the results has it, so a wrong year is still caught.
 
 ---
 
@@ -321,7 +336,7 @@ Every tool returns JSON: `{"ok": true, "data": …}` or `{"ok": false, "error": 
 
 | Tool | Arguments (required **bold**) | Returns | Permission |
 |---|---|---|---|
-| `add_expense` | **amount** (number > 0), **category** (enum of 12), currency (enum, default family base), date (YYYY-MM-DD, default today), description, goal_name | id, stored values, `amount_base`, budget alerts | all |
+| `add_expense` | **amount** (number > 0), **category** (one of the 12; checked on the server), currency (enum, default family base), date (YYYY-MM-DD, default today), description, goal_name | id, stored values, `amount_base`, budget alerts | all |
 | `edit_expense` | **expense_id**, **changes** {amount, category, currency, date, description}, confirmation_id | preview + `confirmation_required`, or the updated row | own / manager |
 | `delete_expense` | **expense_id**, confirmation_id | preview + `confirmation_required`, or done | own / manager |
 | `list_expenses` | period, category, member, limit (default 10) | rows with ids, newest first | members: own only |
@@ -331,9 +346,11 @@ Every tool returns JSON: `{"ok": true, "data": …}` or `{"ok": false, "error": 
 | `search_expenses` | **query**, period, limit (default 5) | matching expenses by meaning | members: own only |
 | `check_budget` | category (all if omitted), period (a month: `this_month`, `last_month` or `YYYY-MM`; default `this_month`) | spent, limit, remaining, % used, status | all |
 | `set_budget` | **category**, **amount**, month (omit = recurring), currency | the stored limit | manager |
-| `ask_clarification` | **question**, **missing_fields** ⊂ {amount, category, currency, date, expense, goal, member, other} | ends the turn | all |
+| `ask_clarification` | **question**, **missing_fields** (free text, e.g. amount, category, expense) | ends the turn | all |
 
 `list_expenses` is not in Report Part 1, Table 4.2. It is added because edits and deletions need a way to find the expense being referred to ("امسح آخر مصروف").
+
+**Loose schemas, strict validation.** Groq rejects a call that breaks the schema before the server sees it (HTTP 400 `tool_use_failed`, §6.2), so the schemas sent to the model are loose: categories have **no enum** (the 12 names are listed once in the system prompt, §6.4), **no argument allows `null`**, every optional argument says "omit if unknown", and `ask_clarification.missing_fields` is free text. Strictness stays in the server's argument models (pydantic): only the 12 category names are accepted, and any error goes back to the model as `invalid_args`.
 
 ### 7.2 Priority 2 — financial assistant (basic)
 
@@ -497,8 +514,8 @@ Fine-tuning · enterprise microservices (API gateway, message broker, one databa
 | Item | Status (step 4b, 4 Nov) |
 |---|---|
 | Groq model ID for Llama 3.1 8B, and native tool calling with both models | **Llama is not available.** Groq's `/models` for this project lists neither `llama-3.3-70b-versatile` (a request returns 404 `model_not_found`) nor any Llama 3.1 8B. Chosen instead: `MODEL_MAIN` = `openai/gpt-oss-120b`, `MODEL_SMALL` = `openai/gpt-oss-20b`. With "دفعت 5000 بنزين" and one `add_expense` tool, both return a native tool call with valid JSON arguments `{amount: 5000, category: "بنزين ومواصلات"}`, at the default reasoning effort and at `reasoning_effort=low`. Default → low: 120b 91 → 57 completion tokens (51 → 17 reasoning), 0.58 → 0.44 s; 20b 95 → 54 (62 → 21), 0.40 → 0.28 s; prompt 208 tokens. Rate-limit headers: 1,000 requests (daily window) and 8,000 tokens per minute per model. **Resolved in v1.2:** D2, D12, D14, §3.1, §6.2, §6.3, §9.4 and §9.5 |
-| Daily token limit per model (reported as 200,000) | **Not shown in the response headers** (step 5a, 4 Nov). They give only `x-ratelimit-limit-requests: 1000` (a daily window: `reset-requests` was 1h1m55s after 43 requests, i.e. 86.4 s per request) and `x-ratelimit-limit-tokens: 8000` (per minute). The 200,000-a-day figure stays unconfirmed, so runs must stop cleanly on a 429 with a long `retry-after` (§9.5 item 3). The step 5a measurement used about 81,000 tokens on `gpt-oss-20b` and 60,000 on `gpt-oss-120b`, with no 429; requests left: 957 and 964 |
-| Average tokens per agent call | **Measured in step 5a** on the 20 fixed messages with `reasoning_effort=low`: **1,732 tokens per call on `gpt-oss-20b` and 1,714 on `gpt-oss-120b`, above the 1,500 target.** The prompt is about 1,660 of it: tool schemas 1,038, system prompt about 475, chat template about 70. Completion about 60 (reasoning about 11). A message takes 1.9 calls on average, about 3,260 tokens (20b) and 3,160 (120b); two expenses plus a budget check take about 7,200. Default reasoning on 5 of the messages: completion ×2–2.5, the advice message 6,379 instead of 3,896 tokens. With 8,000 tokens a minute, one message takes about a minute. Groq checks tool arguments against the schema: a value outside an enum or a `null` returns HTTP 400 `tool_use_failed` and the turn fails (3 of 20 messages on 20b, 1 on 120b) |
+| Daily token limit per model (reported as 200,000) | **Not shown in the response headers** (step 5a, 4 Nov). They give only `x-ratelimit-limit-requests: 1000` (a daily window: `reset-requests` was 1h1m55s after 43 requests, i.e. 86.4 s per request) and `x-ratelimit-limit-tokens: 8000` (per minute). The 200,000-a-day figure stays unconfirmed, so runs must stop cleanly on a 429 with a long `retry-after` (§9.5 item 3). The step 5a measurement used about 81,000 tokens on `gpt-oss-20b` and 60,000 on `gpt-oss-120b`, with no 429; requests left: 957 and 964. The step 5a2 re-measurement used about 56,000 and 46,000 tokens, again with no 429; requests left afterwards: 967 and 974 (the daily window refills continuously) |
+| Average tokens per agent call | **Measured in step 5a** on the 20 fixed messages with `reasoning_effort=low`: **1,732 tokens per call on `gpt-oss-20b` and 1,714 on `gpt-oss-120b`, above the 1,500 target.** The prompt is about 1,660 of it: tool schemas 1,038, system prompt about 475, chat template about 70. Completion about 60 (reasoning about 11). A message takes 1.9 calls on average, about 3,260 tokens (20b) and 3,160 (120b); two expenses plus a budget check take about 7,200. Default reasoning on 5 of the messages: completion ×2–2.5, the advice message 6,379 instead of 3,896 tokens. With 8,000 tokens a minute, one message takes about a minute. Groq checks tool arguments against the schema: a value outside an enum or a `null` returns HTTP 400 `tool_use_failed` and the turn fails (3 of 20 messages on 20b, 1 on 120b). **Re-measured after step 5a2** (4 Nov): fresh seed database, date 2026-11-04, `low`; messages 1–4 as setup, then the 9 that failed or were weak (5, 9, 12, 14–19; 17 as the member). Tool schemas 1,038 → **898** tokens, but the system prompt grew to about 625 (the 12 categories and the new rules), so the first call still has about **1,594** prompt tokens. Average per call **1,786 (20b) and 1,758 (120b): the 1,400 target is not met.** Per message 4,168 and 3,126 (20b needs 21 calls for the 9 messages, 120b 16). **No `tool_use_failed`** with either model; on 20b, `ask_clarification` with an empty `missing_fields` was refused by the server's validation 3 times and corrected in the same turn. Wait before a call: 8.3 s on average (max 17) on 20b and 5.7 s (max 11) on 120b, against 16 s (max 56) before calibration. Results on the 9 messages, 20b: 5 correct, 2 partial, 2 wrong (was 0, 2, 7); 120b: 5, 4, 0 (was 3, 2, 4). Left wrong or partial: 20b asks for an amount that is given (#5) or after an empty search (#12), and searches for "بابا" instead of being refused (#17); 120b searches "الدكتور" in this month only (#12), writes the year 2024 for 2026 again (#14), and calls one fuel expense "several" (#15); both invent a savings target in the advice (#18) and skip `compare_months`. Grounding check: 4 numbers flagged on the new replies, all real errors (2024; "50 %", "10 %" and "10,000" in the advice). On the step 5a replies, false alarms fell from 24 to 3 (20b), 10 to 2 (120b) and 6 to 0 (default effort), and 2024 and "30–40 %" are still caught |
 | Laptop RAM for running `gpt-oss-20b` locally | Open (fallback only, §9.5) |
 | ChromaDB client and server versions | `chromadb` 1.5.7 in `backend/.venv` for client and server (`chroma run --path data\chroma --port 8001`). Heartbeat OK; `expenses` and `corrections` created with cosine distance (metadata and configuration). The server reports API version 1.0.0 |
 | Ollama with `bge-m3` | Ollama 0.32.3, 1024-dimensional vectors. Warm-up with the model unloaded: 12.2 s; next request 0.5 s. `GET /health`: database, ChromaDB and Ollama `ok` |
@@ -510,6 +527,19 @@ Fine-tuning · enterprise microservices (API gateway, message broker, one databa
 ---
 
 ## 14. Changes
+
+### Version 1.3 (4 November 2026)
+
+After the first token measurement (step 5a2):
+- **§6.2:** a call that Groq rejects with HTTP 400 `tool_use_failed` goes back to the model as an error, at most 2 corrections a turn, then a clear request to rephrase; logged as `invalid_args`.
+- **§7.1:** loose schemas and strict validation: no category enum, no `null`, "omit if unknown", free-text `missing_fields`; the server's pydantic models stay strict.
+- **§6.4:** the 12 categories with keywords and the currency names are listed once in the system prompt, with rules for the failures measured in step 5a (category inference, dollars, edit and delete by description, search before asking, refusals, advice from tool numbers only).
+- **§5:** a member asking about another member is refused before any member lookup, so no names leak.
+- **§6.3:** the rate limiter is calibrated per model (moving average of actual ÷ estimated tokens, 10 % margin) and waits only for the missing tokens.
+- **§6.9:** the grounding check normalises Arabic digits, digit groups, "ألف/k/مليون" and list numbering, accepts rounding to the shown precision and ±0.1 on percentages, and accepts a year only if a result date has it.
+- **Seed:** expense descriptions are short Syrian phrases per category, so search by meaning has something to find.
+- **§13:** results of the re-measurement.
+- **Decisions taken in step 5a2 and accepted:** a `reasoning_tokens` column in `llm_calls`; enums kept only where the server must be exact (currency); a `not_available` error code; `check_budget` hides categories with no spending and no set budget; a `retry-after` longer than 60 s counts as the daily quota running out.
 
 ### Version 1.2 (4 November 2026)
 

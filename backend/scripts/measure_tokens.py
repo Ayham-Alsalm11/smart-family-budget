@@ -4,8 +4,10 @@
     .venv\\Scripts\\python -m scripts.measure_tokens [--today 2026-11-04] [--phases small-low,main-low,small-default]
 
 Each phase runs on a fresh copy of the seed database (never the development database) and an
-in-process ChromaDB, with a fixed date. Results are saved after every message to
-backend/data/measurements/measure_<timestamp>.json (untracked). Any 429 stops the whole run.
+in-process ChromaDB, with a fixed date. --messages picks messages; --setup runs messages first to
+prepare the state (e.g. expenses to edit), marked "setup" so that they stay out of comparisons.
+Results are saved after every message to backend/data/measurements/measure_<timestamp>.json
+(untracked). Any 429 stops the whole run.
 """
 import argparse
 import json
@@ -110,8 +112,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--today", type=date.fromisoformat, default=date(2026, 11, 4))
     parser.add_argument("--phases", default=",".join(PHASES))
     parser.add_argument("--pause", type=float, default=2.0, help="seconds between messages (the limiter adds more)")
+    parser.add_argument("--messages", help="comma-separated message numbers (default: the phase's own list)")
+    parser.add_argument("--setup", default="", help="message numbers run first in each phase, marked as setup")
     args = parser.parse_args(argv)
     phases = args.phases.split(",")
+    chosen = [int(n) for n in args.messages.split(",")] if args.messages else None
+    setup = [int(n) for n in args.setup.split(",") if n]
 
     settings = get_settings()
     folder = BACKEND_DIR / "data" / "measurements"
@@ -122,13 +128,14 @@ def main(argv: list[str] | None = None) -> int:
     embedder = OllamaEmbedder(settings.ollama_base_url, settings.embedding_model)
     embedder.warmup()
     report = {"today": args.today.isoformat(), "started": stamp, "tool_mode": settings.tool_mode,
-              "max_tokens": settings.llm_max_tokens, "phases": {}, "rate_limits": {}}
+              "max_tokens": settings.llm_max_tokens, "setup": setup, "phases": {}, "rate_limits": {}}
 
     try:
         report["prompt_size"] = _schema_size(client, settings.model_small)
         print(f"prompt size: {report['prompt_size']}", flush=True)
         for phase in phases:
             model_name, effort, numbers = PHASES[phase]
+            numbers = [(n, True) for n in setup] + [(n, False) for n in (chosen or numbers)]
             model = settings.model_id(model_name)
             client.reasoning_effort = effort
             engine, session = _fresh_database(folder, f"measure_{stamp}_{phase}", args.today)
@@ -139,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
                                        "indexed_expenses": indexed, "messages": results}
             print(f"== {phase}: {model}, reasoning {effort or 'default'}, {indexed} expenses indexed", flush=True)
 
-            for number in numbers:
+            for number, is_setup in numbers:
                 text = MESSAGES[number - 1]
                 who = members["member" if number in MEMBER_MESSAGES else "manager"]
                 ctx = ToolContext(who.family_id, who.id, who.role, args.today, model)
@@ -147,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
                 turn = run_turn(session, ctx, text, client, model=model, embedder=embedder if store else None,
                                 vector_store=store, max_steps=settings.llm_max_steps)
                 results.append({
-                    "n": number, "user": who.username, "text": text, "reply": turn.reply, "ended_by": turn.ended_by,
+                    "n": number, "setup": is_setup, "user": who.username, "text": text, "reply": turn.reply, "ended_by": turn.ended_by,
                     "llm_steps": turn.llm_steps,
                     "tools": [{"tool": s.tool, "arguments": s.arguments, "status": s.status,
                                "error": s.result.get("error")} for s in turn.steps],
@@ -158,7 +165,8 @@ def main(argv: list[str] | None = None) -> int:
                 report["rate_limits"] = client.last_rate_limits
                 _save(out, report)
                 tools = ", ".join(f"{s.tool}:{s.status}" for s in turn.steps) or "-"
-                print(f"  #{number:>2} [{turn.ended_by}] {turn.usage.total_tokens:>5} tok, "
+                waited = sum(c.get("waited_ms", 0) for c in turn.llm_calls) / 1000
+                print(f"  #{number:>2}{' (setup)' if is_setup else ''} [{turn.ended_by}] waited {waited:.1f}s, {turn.usage.total_tokens:>5} tok, "
                       f"{turn.llm_steps} step(s): {tools}", flush=True)
                 if turn.error and "rate_limited" in turn.error:
                     print(f"STOPPED on a 429: {turn.error}", flush=True)
