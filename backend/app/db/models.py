@@ -88,6 +88,8 @@ class Member(Base):
     password_hash: Mapped[str] = mapped_column(String(100))
     role: Mapped[str] = mapped_column(String(10))
     is_active: Mapped[bool] = mapped_column(default=True)
+    failed_logins: Mapped[int] = mapped_column(Integer, default=0)  # consecutive; reset by a successful login
+    locked_until: Mapped[datetime | None] = mapped_column(UTCDateTime)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
@@ -103,6 +105,7 @@ class Invite(Base):
     expires_at: Mapped[datetime] = mapped_column(UTCDateTime)
     used_by: Mapped[int | None] = mapped_column(ForeignKey("members.id"))
     used_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
+    revoked_at: Mapped[datetime | None] = mapped_column(UTCDateTime)
 
 
 class Category(Base):
@@ -255,5 +258,6 @@ class LlmCall(Base):
     prompt_tokens: Mapped[int | None] = mapped_column(Integer)
     completion_tokens: Mapped[int | None] = mapped_column(Integer)
     reasoning_tokens: Mapped[int | None] = mapped_column(Integer)  # part of completion_tokens (§6.3)
+    cached_tokens: Mapped[int | None] = mapped_column(Integer)  # part of prompt_tokens (§6.3)
     error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
