@@ -96,12 +96,19 @@ class FailingEmbedder:
 class FakeVectorStore:
     def __init__(self) -> None:
         self.items: dict[tuple[str, str], dict] = {}
+        self.queries: list[dict] = []
 
     def upsert(self, collection, item_id, embedding, document, metadata) -> None:
         self.items[(collection, item_id)] = {"embedding": embedding, "document": document, "metadata": metadata}
 
     def delete(self, collection, item_id) -> None:
         self.items.pop((collection, item_id), None)
+
+    def query(self, collection, ctx, embedding, n_results=5, where=None) -> list[dict]:
+        """Returns every stored item, ignoring the scope, so tests can check that the tools still filter."""
+        self.queries.append({"collection": collection, "ctx": ctx, "where": where})
+        return [{"id": key[1], "document": item["document"], "metadata": item["metadata"], "distance": 0.1}
+                for key, item in self.items.items() if key[0] == collection][:n_results]
 
     def heartbeat(self) -> int:
         return 1
