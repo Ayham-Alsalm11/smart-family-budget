@@ -53,6 +53,16 @@ class ChromaVectorStore:
             raise VectorStoreError(f"collections without cosine distance: {wrong}")
         return spaces
 
+    def reset_collections(self) -> int:
+        """Delete both collections with everything in them. Returns how many vectors were removed."""
+        existing = {c.name for c in self._client.list_collections()}
+        removed = 0
+        for name in COLLECTIONS:
+            if name in existing:
+                removed += self.collection(name).count()
+                self._client.delete_collection(name)
+        return removed
+
     def upsert(self, collection: str, item_id: str, embedding: list[float], document: str,
                metadata: dict[str, Any]) -> None:
         self.collection(collection).upsert(

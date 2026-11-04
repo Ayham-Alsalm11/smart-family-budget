@@ -64,6 +64,17 @@ present only when it applies.
 Needs `SEED_MANAGER_PASSWORD` and `SEED_MEMBER_PASSWORD` in `backend\.env`. Creates the 12 categories and
 "عائلة السالم" (base currency SYP_OLD, income 500,000) with users `manager` and `member` and 60 expenses.
 
+Search by meaning needs these expenses in ChromaDB. **After every re-creation of the development database**, with
+ChromaDB and Ollama running:
+
+```
+.venv\Scripts\python -m app.rag.reindex --reset
+```
+
+It wipes the server's collections and embeds every expense of the current database again. The server keeps its data
+apart from `fba.db`, so without this step search finds nothing, or old vectors stay under ids that now mean other
+expenses. Without `--reset` it only embeds the expenses that have no vector yet.
+
 ## Tests
 
 From the repository root (`pytest.ini` restricts collection to `backend/tests`):
