@@ -34,12 +34,10 @@ class Changes(Arguments):
 class EditExpense(Arguments):
     expense_id: int
     changes: Changes
-    confirmation_id: int | None = None
 
 
 class DeleteExpense(Arguments):
     expense_id: int
-    confirmation_id: int | None = None
 
 
 class ListExpenses(Arguments):

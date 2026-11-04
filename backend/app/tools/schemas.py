@@ -16,6 +16,7 @@ _DATE = {"type": "string", "description": f"YYYY-MM-DD; {_OMIT}"}
 _PERIODS = "today|yesterday|this_week|last_week|this_month|last_month|last_3_months|this_year|YYYY-MM|custom"
 _PERIOD = {"type": "string", "description": _PERIODS}
 _PERIOD_OPT = {"type": "string", "description": f"{_PERIODS}; {_OMIT}"}
+_SEARCH_PERIOD = {"type": "string", "description": f"{_PERIODS}; omit unless the user names a period (default: last 3 months)"}
 _RANGE = {"start_date": {"type": "string", "description": "YYYY-MM-DD, only with custom; omit otherwise"},
           "end_date": {"type": "string", "description": "YYYY-MM-DD, only with custom; omit otherwise"}}
 _MEMBER = {"type": "string", "description": "'me' or a name; omit for the whole family"}
@@ -40,10 +41,9 @@ TOOL_SCHEMAS = [
         "changes": {"type": "object", "description": "only the changed fields", "properties": {
             "amount": {"type": "number"}, "category": _CATEGORY, "currency": _CURRENCY,
             "date": {"type": "string"}, "description": {"type": "string"}}},
-        "confirmation_id": {"type": "integer", "description": "omit"},
     }, ("expense_id", "changes")),
     _tool("delete_expense", "Delete an expense; needs confirmation.", {
-        "expense_id": {"type": "integer"}, "confirmation_id": {"type": "integer", "description": "omit"},
+        "expense_id": {"type": "integer"},
     }, ("expense_id",)),
     _tool("list_expenses", "List expenses with ids, newest first.", {
         "period": _PERIOD_OPT, **_RANGE, "category": _CATEGORY_OPT, "member": _MEMBER, "limit": _LIMIT,
@@ -61,7 +61,7 @@ TOOL_SCHEMAS = [
         "category": _CATEGORY_OPT,
     }, ("month_a", "month_b")),
     _tool("search_expenses", "Find expenses by meaning (shop, person, item).", {
-        "query": {"type": "string"}, "period": _PERIOD_OPT, **_RANGE, "limit": _LIMIT,
+        "query": {"type": "string"}, "period": _SEARCH_PERIOD, **_RANGE, "limit": _LIMIT,
     }, ("query",)),
     _tool("check_budget", "Spent, limit and remaining per category in a month.", {
         "category": {"type": "string", "description": "category; omit for all"},

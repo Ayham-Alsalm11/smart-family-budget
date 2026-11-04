@@ -24,6 +24,8 @@ from app.tools.schemas import TOOL_NAMES
 
 log = logging.getLogger(__name__)
 
+SEARCH_DEFAULT_PERIOD = "last_3_months"
+
 # tool_log.status has no separate value for these codes (§4).
 _LOG_STATUS = {"missing_fields": "invalid_args", "not_available": "error"}
 
@@ -103,16 +105,12 @@ def _add_expense(args: A.AddExpense, ctx: ToolContext, deps: ToolDeps) -> dict:
 
 
 def _edit_expense(args: A.EditExpense, ctx: ToolContext, deps: ToolDeps) -> dict:
-    if args.confirmation_id is not None:
-        raise ToolFailure("not_available", "Confirming is not available yet; tell the user the change is pending.")
     preview = pending.request_change(deps.session, ctx, "edit_expense", args.expense_id,
                                      args.changes.model_dump(exclude_none=True))
     raise ToolFailure("confirmation_required", "Show the preview and ask the user to confirm.", **preview)
 
 
 def _delete_expense(args: A.DeleteExpense, ctx: ToolContext, deps: ToolDeps) -> dict:
-    if args.confirmation_id is not None:
-        raise ToolFailure("not_available", "Confirming is not available yet; tell the user the deletion is pending.")
     preview = pending.request_change(deps.session, ctx, "delete_expense", args.expense_id)
     raise ToolFailure("confirmation_required", "Show the preview and ask the user to confirm.", **preview)
 
@@ -144,11 +142,9 @@ def _compare_months(args: A.CompareMonths, ctx: ToolContext, deps: ToolDeps) -> 
 def _search_expenses(args: A.SearchExpenses, ctx: ToolContext, deps: ToolDeps) -> dict:
     if deps.embedder is None or deps.vector_store is None:
         raise ToolFailure("not_available", "Search by meaning is not available now; use list_expenses.")
-    where = None
-    if args.period:
-        span = resolve_period(ctx, args.period, args.start_date, args.end_date)
-        where = {"$and": [{"date_key": {"$gte": int(span.start.strftime("%Y%m%d"))}},
-                          {"date_key": {"$lte": int(span.end.strftime("%Y%m%d"))}}]}
+    span = resolve_period(ctx, args.period or SEARCH_DEFAULT_PERIOD, args.start_date, args.end_date)
+    where = {"$and": [{"date_key": {"$gte": int(span.start.strftime("%Y%m%d"))}},
+                      {"date_key": {"$lte": int(span.end.strftime("%Y%m%d"))}}]}
     try:
         vector = deps.embedder.embed(args.query)
         hits = deps.vector_store.query("expenses", ctx, vector, n_results=args.limit, where=where)

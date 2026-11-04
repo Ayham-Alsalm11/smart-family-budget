@@ -128,15 +128,15 @@ def test_a_failed_execution_leaves_the_action_pending(api):
     assert action_status(api, action) == "pending"
 
 
-def test_confirmation_id_in_a_tool_call_stays_not_available(api, llm):
-    """Confirmation in chat is step 6: the tools must not run an action yet."""
+def test_confirmation_id_from_the_model_is_refused(api, llm):
+    """The model can never run an action: only a person can, by button or by a short answer."""
     manager = register(api, "sami")
     expense = spend(api, manager)
     action = ask_to_change(api, manager, expense)
     llm.responses = [respond(call("delete_expense", expense_id=expense, confirmation_id=action)),
                      respond(content="بعدين")]
     steps = api.post("/chat", json={"message": "نعم"}, headers=manager.headers).json()["steps"]
-    assert steps[0]["status"] == "not_available"
+    assert steps[0]["status"] == "invalid_args"
     assert expense_row(api, expense) is not None and action_status(api, action) == "pending"
 
 

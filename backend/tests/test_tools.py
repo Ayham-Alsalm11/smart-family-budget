@@ -103,8 +103,9 @@ def test_edit_and_delete_need_confirmation(session, member_ctx, name, extra):
     assert timedelta(minutes=9) < action.expires_at - utcnow() <= timedelta(minutes=10)
     assert expenses.get_expense(session, member_ctx, mine["id"])["amount"] == 5000, "nothing is changed yet"
 
-    confirmed = run(session, member_ctx, name, expense_id=mine["id"], confirmation_id=action.id, **extra)
-    assert confirmed.code == "not_available"
+    refused = run(session, member_ctx, name, expense_id=mine["id"], confirmation_id=action.id, **extra)
+    assert refused.code == "invalid_args", "the model has no way to confirm"
+    assert session.get(PendingAction, action.id).status == "pending"
 
 
 def test_edit_with_invalid_changes_creates_no_pending_action(session, member_ctx):
