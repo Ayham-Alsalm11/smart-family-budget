@@ -1,9 +1,10 @@
 """The ReAct loop (§6.1, §6.2): plain Python with native function calling, traceable step by step.
 
 One turn = at most `max_steps` LLM steps. Tool calls of one step run in order; invalid ones are not
-executed and their error goes back to the model; `ask_clarification` ends the turn. Every LLM attempt
-goes to `llm_calls`, every tool call to `tool_log`, and the user message and the reply to `messages`.
-Earlier turns reach the model through `agent/memory.py` (§6.8).
+executed and their error goes back to the model; `ask_clarification` and `confirmation_required` end the
+turn. Every LLM attempt goes to `llm_calls`, every tool call to `tool_log`, and the user message and the reply
+to `messages`. Earlier turns reach the model through `agent/memory.py` (§6.8). A yes or no to a pending action
+never reaches the model at all (§6.5, `agent/confirm.py`).
 """
 import json
 import re
@@ -13,6 +14,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.agent.confirm import ConfirmationResult, answer_pending, preview_text, waiting_for_an_answer
 from app.agent.context import ToolContext
 from app.agent.grounding import ungrounded_numbers
 from app.agent.memory import linked_source_text, memory_for_model, recent_messages
@@ -67,7 +69,7 @@ class StepRecord:
 @dataclass
 class TurnResult:
     reply: str
-    ended_by: str  # reply, clarification, step_limit, llm_error, tool_rejected
+    ended_by: str  # one of MESSAGE_OUTCOMES in db/models.py
     steps: list[StepRecord] = field(default_factory=list)
     pending_action: dict | None = None
     alerts: list[dict] = field(default_factory=list)
@@ -101,6 +103,18 @@ def _summary(steps: list[StepRecord]) -> str:
     return "; ".join(parts)
 
 
+def _finish_without_model(session: Session, ctx: ToolContext, done: ConfirmationResult) -> TurnResult:
+    step = StepRecord(0, done.tool, done.arguments, done.status, done.latency_ms, done.result)
+    session.add(ToolLog(
+        message_id=ctx.message_id, family_id=ctx.family_id, member_id=ctx.member_id, step=0, tool_name=done.tool,
+        arguments=done.arguments, result=done.result, status=done.status, latency_ms=done.latency_ms,
+    ))
+    session.add(Message(family_id=ctx.family_id, member_id=ctx.member_id, role="assistant", content=done.reply,
+                        tool_summary=_summary([step]), ended_by=done.ended_by))
+    session.commit()
+    return TurnResult(reply=done.reply, ended_by=done.ended_by, steps=[step], message_id=ctx.message_id)
+
+
 def run_turn(
     session: Session,
     ctx: ToolContext,
@@ -117,10 +131,16 @@ def run_turn(
     model = model or ctx.model
     family = session.get(Family, ctx.family_id)
     history = recent_messages(session, ctx, options.memory_messages, options.memory_hours)
+    waiting = waiting_for_an_answer(session, ctx)
     user_row = Message(family_id=ctx.family_id, member_id=ctx.member_id, role="user", content=message)
     session.add(user_row)
     session.commit()
     ctx = replace(ctx, message_id=user_row.id, model=model)
+    if waiting:
+        done = answer_pending(session, ctx, message, embedder, vector_store)
+        if done is not None:
+            return _finish_without_model(session, ctx, done)
+
     deps = ToolDeps(session, source_text=linked_source_text(history, message), embedder=embedder,
                     vector_store=vector_store)
 
@@ -201,6 +221,8 @@ def run_turn(
             if result.code == "confirmation_required":
                 turn.pending_action = {k: stored["error"].get(k) for k in ("confirmation_id", "action", "expense",
                                                                            "changes")}
+                turn.reply, turn.ended_by = preview_text(turn.pending_action), "confirmation"
+                break
             if result.ok and call.name == "ask_clarification":
                 turn.reply, turn.ended_by = result.data["question"], "clarification"
                 break

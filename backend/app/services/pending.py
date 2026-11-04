@@ -1,7 +1,6 @@
 """Pending edits and deletions (§6.5): created by the tools, executed or cancelled here.
 
-`execute_action` is the only way a pending action runs. The confirm button uses it now; confirmation in chat
-will use the same function in step 6.
+`execute_action` is the only way a pending action runs, for the confirm button and for a yes in chat alike.
 """
 from datetime import timedelta
 from typing import Any
@@ -54,6 +53,9 @@ def request_change(
     elif tool_name != "delete_expense":
         raise ValueError(f"no confirmation flow for {tool_name!r}")
 
+    # A member has one pending action at most, so that "اي" can only mean the latest preview.
+    session.execute(update(PendingAction).where(
+        PendingAction.member_id == ctx.member_id, PendingAction.status == "pending").values(status="cancelled"))
     action = PendingAction(
         family_id=ctx.family_id, member_id=ctx.member_id, message_id=ctx.message_id, tool_name=tool_name,
         arguments=arguments, status="pending", expires_at=utcnow() + timedelta(minutes=CONFIRMATION_MINUTES),
