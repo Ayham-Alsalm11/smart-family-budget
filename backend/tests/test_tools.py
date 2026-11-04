@@ -160,4 +160,4 @@ def test_prompt_is_filled_and_names_currencies_in_arabic():
     prompt = build_system_prompt(date(2026, 11, 4), "SYP_NEW", corrections=["a", "b", "c", "d"])
     assert "{" not in prompt and "}" not in prompt
     assert "Base currency SYP_NEW (ليرة جديدة)" in prompt and "2026-11-03" in prompt
-    assert prompt.count("\n- ") == 3 + 10, "3 corrections at most, plus the 10 rules"
+    assert prompt.count("\n- ") == 3 + 11, "3 corrections at most, plus the 11 rules"
