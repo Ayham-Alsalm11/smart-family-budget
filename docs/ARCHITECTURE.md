@@ -2,7 +2,7 @@
 
 **Project:** Family Budget Agent (Graduation Project 2)
 **Author:** Ayham Al-Salem · **Supervisors:** Dr. Nasreen Suleiman, Eng. Zainab Baghdadi
-**Version:** 1.3 · 4 November 2026 · **Branch:** `gp2-agent` · Changes since 1.0 are listed in §14.
+**Version:** 1.4 · 5 November 2026 · **Branch:** `gp2-agent` · Changes since 1.0 are listed in §14.
 
 This document turns the methodology of *Report Part 1* (Chapter 4) into a specification that the code is written from. It records every architectural decision taken after Seminar 1. When the code and this document disagree, fix one of them; do not leave them out of sync.
 
@@ -205,6 +205,16 @@ The schema is created with `create_all` in a new database file (`backend/data/fb
 2. *Invite:* a manager creates an invite code with a role. The new person registers with the code and joins that family.
 3. *Login:* username and password (hashed with bcrypt). The API returns a JWT that holds only `member_id`. The family and role are loaded from the database on every request.
 
+**Account rules**
+- **One family per account.** The username has 3–30 characters from `a-z`, `0-9`, `_` and `.`, is stored in lower case, and is unique across the whole system. The display name (`name`) is in any language, 1–50 characters.
+- **Password:** at least 8 characters and at most 72 UTF-8 bytes (bcrypt's limit; an Arabic letter takes 2 bytes), with a clear error. The rules apply when a password is chosen, not at login.
+- **JWT:** HS256, with `sub` (the member id), `iat` and `exp`; valid for 7 days. On every request the member is loaded from the database: if missing or `is_active = false`, the answer is 401 at once, even for a valid token. Login paths answer 503 if `JWT_SECRET` is empty or shorter than 32 characters.
+- **Login lockout:** after 5 consecutive failures for a username, login is locked for 5 minutes (`members.failed_logins`, `members.locked_until`). A successful login resets the count. An unknown username, a wrong password and a stopped account get the same message.
+- **Invite code:** 8 upper-case characters from an alphabet without 0, O, 1, I and L, generated with `secrets`, accepted in either case. Single use, valid 7 days, and it carries the role. A manager can list open invites and revoke them (`invites.revoked_at`).
+- **Stopping a member** (`DELETE /members/{id}`): nothing is deleted; `is_active` becomes false. They cannot log in, and their expenses stay in every total under their name. Their pending actions are cancelled and, for a manager, their open invites are revoked.
+- **Last manager:** the last active manager of a family can be neither stopped nor changed to a member.
+- **Other families:** a resource of another family answers 404, not 403, so that nobody learns it exists.
+
 **Permission matrix** (enforced in `services/`, D7)
 
 | Action | Manager | Member |
@@ -258,7 +268,7 @@ flowchart TD
 - Groq OpenAI-compatible chat completions with the `tools` parameter (native function calling).
 - Models in a registry: `main` = `openai/gpt-oss-120b`; `small` = `openai/gpt-oss-20b` (D2). Both answered a native tool call with valid JSON arguments in step 4b.
 - `reasoning_effort` is a setting (`REASONING_EFFORT`, default `low`). In step 4b, `low` cut completion tokens by about 40 % on both models and the tool call stayed correct. That was one sentence only; step 5 confirms it on more examples before it is fixed for the evaluation.
-- Every call records `usage` (prompt, completion and reasoning tokens) in `llm_calls`, because the token budget decides the size of the evaluation (§9.5).
+- Every call records `usage` (prompt, completion, reasoning and cached tokens) in `llm_calls`, because the token budget decides the size of the evaluation (§9.5). `cached_tokens` comes from `prompt_tokens_details.cached_tokens` (0 when absent) and is part of `prompt_tokens`.
 - **Fallback mode:** if native tool calling proves unreliable for a model, the client switches to a JSON-in-text mode with the same schemas. The loop does not change.
 - Timeout 30 s. Up to 3 retries with exponential backoff and jitter; on HTTP 429, wait for the `retry-after` header when present. Every attempt is written to `llm_calls`. A request that still fails returns a friendly message and is **counted as a failure** in evaluation. A client-side limiter keeps each model under its per-minute token limit, so that 429 errors are avoided rather than retried. It starts from `x-ratelimit-remaining-tokens` of the last response and Groq's continuous refill (limit ÷ 60 tokens a second), so a request waits only for the missing tokens; before any header it uses a rolling 60 s window. Its estimate is **calibrated per model**: a moving average (weight 0.3) of actual ÷ estimated tokens, plus a 10 % margin (the raw estimate overshot by about 1.7× in step 5a). A `retry-after` longer than 60 s is treated as the daily quota running out. Report Part 1 (§4.3) allowed a tier with higher limits during evaluation; that is not possible (D14), so the evaluation is planned within the free tier (§9.5).
 
@@ -288,6 +298,8 @@ The prompt is in English, as short as possible (every call pays for it, §9.5), 
 2. The service checks ownership and creates a `pending_actions` row. It returns `confirmation_required` with a preview and the `confirmation_id`.
 3. The assistant shows the preview and asks. In React, confirm and cancel buttons call `POST /actions/{id}/confirm` or `/cancel` directly.
 4. In chat, a confirmation is accepted only in a **later user turn**: the model calls the tool again with `confirmation_id`. The server executes it only if the pending action was created in an earlier message, by the same member, and is less than 10 minutes old. The model therefore cannot confirm its own request within one turn.
+
+**One execution function** for buttons and chat: `execute_action(session, ctx, action_id)` in `services/pending.py`. It checks that the action belongs to the same member, is `pending`, and has not expired (otherwise its status becomes `expired`), and that the permission still holds. It then runs `update_expense` or `delete_expense` and sets the status to `confirmed`; if the service refuses, nothing changes. `cancel_action` sets `cancelled`. The buttons use these functions from step 5b; chat will use the same function in step 6, so until then `edit_expense` and `delete_expense` with a `confirmation_id` return `not_available`.
 
 ### 6.6 Clarification
 
@@ -384,18 +396,32 @@ Every tool returns JSON: `{"ok": true, "data": …}` or `{"ok": false, "error": 
 | `POST /auth/register-family` | Create family + first manager → token | public |
 | `POST /auth/join` | Register with an invite code → token | public |
 | `POST /auth/login` · `GET /me` | Login; current member, family and role | public · any |
-| `POST /chat` | `{message}` → `{reply, steps[], pending_action?, alerts[]}` | any |
+| `POST /chat` | `{message}` (1–1000 characters) → `{reply, steps[], pending_action?, alerts[], message_id}`. 503 without a Groq key | any |
 | `GET /messages` | Recent conversation | any (own) |
 | `GET /expenses` · `PATCH /expenses/{id}` · `DELETE /expenses/{id}` | Table view and direct edits (same services and permissions) | any (scoped) |
 | `POST /actions/{id}/confirm` · `/cancel` | Confirm or cancel a pending edit or deletion | owner of the action |
-| `GET /summary?month=` | Dashboard: income, total, remaining, categories with limits, alerts, goals | any |
-| `GET /budgets` · `PUT /budgets` | Read or set limits | any · manager |
-| `GET /goals` · `POST /goals` | Savings goals | any · manager |
-| `GET /members` · `POST /invites` · `DELETE /members/{id}` · `PUT /members/{id}/role` | Family management | manager |
-| `PUT /family` | Income, base currency, USD rate | manager |
+| `GET /summary?month=` | Dashboard: income, total, remaining, categories with limits, alerts; goals from step 8 | any |
+| `GET /budgets?month=` · `PUT /budgets` | Effective limits with their source (month, recurring, income percent); set a limit | any · manager |
+| `GET /goals` · `POST /goals` | Savings goals (**step 8**, not in step 5b) | any · manager |
+| `GET /members` · `POST /invites` · `GET /invites` · `DELETE /invites/{id}` · `DELETE /members/{id}` · `PUT /members/{id}/role` | Family management: open invites can be listed and revoked | manager |
+| `PUT /family` | Name, income, base currency, USD rate | manager |
 | `GET /health` | Status of the database, Chroma, Ollama and the Groq key | public |
 
 `steps[]` lists each tool call of the turn (tool, arguments, status, latency). The React agent-steps panel shows it.
+
+**Errors** have one shape across the API, with the same codes as the tools: `{"error": {"code", "message", "fields"?}}`.
+
+| Status | Case | Code |
+|---|---|---|
+| 401 | Authentication failed | `unauthorized` |
+| 403 | `ForbiddenError` | `forbidden` |
+| 404 | `NotFoundError`, or a resource of another family | `not_found` |
+| 409 | State conflict: invite used, revoked or expired; action already executed or expired; last manager; username taken; base currency with expenses | `conflict` |
+| 422 | `ValidationError`, `MissingFieldsError` | `invalid_args`, `missing_fields` |
+| 429 | Login locked | `locked` |
+| 503 | No Groq key, or an unusable `JWT_SECRET` | `not_available` |
+
+**Base currency:** it can change only while the family has no expenses, because `amount_base` is computed in it. Changing `usd_rate` affects new expenses only, because `rate_to_base` is stored with each expense.
 
 ---
 
@@ -516,6 +542,8 @@ Fine-tuning · enterprise microservices (API gateway, message broker, one databa
 | Groq model ID for Llama 3.1 8B, and native tool calling with both models | **Llama is not available.** Groq's `/models` for this project lists neither `llama-3.3-70b-versatile` (a request returns 404 `model_not_found`) nor any Llama 3.1 8B. Chosen instead: `MODEL_MAIN` = `openai/gpt-oss-120b`, `MODEL_SMALL` = `openai/gpt-oss-20b`. With "دفعت 5000 بنزين" and one `add_expense` tool, both return a native tool call with valid JSON arguments `{amount: 5000, category: "بنزين ومواصلات"}`, at the default reasoning effort and at `reasoning_effort=low`. Default → low: 120b 91 → 57 completion tokens (51 → 17 reasoning), 0.58 → 0.44 s; 20b 95 → 54 (62 → 21), 0.40 → 0.28 s; prompt 208 tokens. Rate-limit headers: 1,000 requests (daily window) and 8,000 tokens per minute per model. **Resolved in v1.2:** D2, D12, D14, §3.1, §6.2, §6.3, §9.4 and §9.5 |
 | Daily token limit per model (reported as 200,000) | **Not shown in the response headers** (step 5a, 4 Nov). They give only `x-ratelimit-limit-requests: 1000` (a daily window: `reset-requests` was 1h1m55s after 43 requests, i.e. 86.4 s per request) and `x-ratelimit-limit-tokens: 8000` (per minute). The 200,000-a-day figure stays unconfirmed, so runs must stop cleanly on a 429 with a long `retry-after` (§9.5 item 3). The step 5a measurement used about 81,000 tokens on `gpt-oss-20b` and 60,000 on `gpt-oss-120b`, with no 429; requests left: 957 and 964. The step 5a2 re-measurement used about 56,000 and 46,000 tokens, again with no 429; requests left afterwards: 967 and 974 (the daily window refills continuously) |
 | Average tokens per agent call | **Measured in step 5a** on the 20 fixed messages with `reasoning_effort=low`: **1,732 tokens per call on `gpt-oss-20b` and 1,714 on `gpt-oss-120b`, above the 1,500 target.** The prompt is about 1,660 of it: tool schemas 1,038, system prompt about 475, chat template about 70. Completion about 60 (reasoning about 11). A message takes 1.9 calls on average, about 3,260 tokens (20b) and 3,160 (120b); two expenses plus a budget check take about 7,200. Default reasoning on 5 of the messages: completion ×2–2.5, the advice message 6,379 instead of 3,896 tokens. With 8,000 tokens a minute, one message takes about a minute. Groq checks tool arguments against the schema: a value outside an enum or a `null` returns HTTP 400 `tool_use_failed` and the turn fails (3 of 20 messages on 20b, 1 on 120b). **Re-measured after step 5a2** (4 Nov): fresh seed database, date 2026-11-04, `low`; messages 1–4 as setup, then the 9 that failed or were weak (5, 9, 12, 14–19; 17 as the member). Tool schemas 1,038 → **898** tokens, but the system prompt grew to about 625 (the 12 categories and the new rules), so the first call still has about **1,594** prompt tokens. Average per call **1,786 (20b) and 1,758 (120b): the 1,400 target is not met.** Per message 4,168 and 3,126 (20b needs 21 calls for the 9 messages, 120b 16). **No `tool_use_failed`** with either model; on 20b, `ask_clarification` with an empty `missing_fields` was refused by the server's validation 3 times and corrected in the same turn. Wait before a call: 8.3 s on average (max 17) on 20b and 5.7 s (max 11) on 120b, against 16 s (max 56) before calibration. Results on the 9 messages, 20b: 5 correct, 2 partial, 2 wrong (was 0, 2, 7); 120b: 5, 4, 0 (was 3, 2, 4). Left wrong or partial: 20b asks for an amount that is given (#5) or after an empty search (#12), and searches for "بابا" instead of being refused (#17); 120b searches "الدكتور" in this month only (#12), writes the year 2024 for 2026 again (#14), and calls one fuel expense "several" (#15); both invent a savings target in the advice (#18) and skip `compare_months`. Grounding check: 4 numbers flagged on the new replies, all real errors (2024; "50 %", "10 %" and "10,000" in the advice). On the step 5a replies, false alarms fell from 24 to 3 (20b), 10 to 2 (120b) and 6 to 0 (default effort), and 2024 and "30–40 %" are still caught |
+| The API on the real model (step 5b) | **Passed** (`api_smoke_20261105_000042.json`; temporary database, in-process ChromaDB, `gpt-oss-120b`, `low`, date 2026-11-04). All 8 steps behaved as expected, with no 429: a family in `SYP_OLD`; an invite and a join; "دفعت 5000 بنزين" and "اشتريت خضرا بـ 3000" each recorded in the right category; a member asking about the manager by display name got `forbidden` and a polite refusal, with no number; "كم صرفنا هالشهر؟" answered 8000 from `get_total`; a member's `DELETE` of the manager's expense got 403; "امسح مصروف البنزين" went `list_expenses` → `delete_expense` → `confirmation_required`, and `POST /actions/{id}/confirm` deleted it (total 3000 afterwards). 18,760 tokens in 11 calls (about 1,705 per call; prompt 1,593 on a first call), and no ungrounded numbers. Left to improve: the refusal adds "if you are the manager, tell me", although the server checks the role and that sentence cannot change anything |
+| Prompt caching on the free tier | **`cached_tokens` does appear above zero, but it did not lower the per-minute charge.** The same full request 3 times (prompt 1,588, completion 29, total 1,617), with the bucket refilled to 8,000 before each: `cached_tokens` 0, 0, 1,536 and `x-ratelimit-remaining-tokens` after each 6,360, 6,360, 6,360, so 1,640 tokens each time, cached or not. Latency did not change either (1.28, 1.37, 1.30 s). **Limits of this result:** one cached request in this test, plus one in the scenario (1,536 of 1,671) out of 11, so hits are irregular even for an identical prefix; and the identical header may be an estimate taken on admission, so a later correction cannot be excluded, and the effect on the daily limit is unknown. **Planning:** §9.5 keeps counting cached tokens in full |
 | Laptop RAM for running `gpt-oss-20b` locally | Open (fallback only, §9.5) |
 | ChromaDB client and server versions | `chromadb` 1.5.7 in `backend/.venv` for client and server (`chroma run --path data\chroma --port 8001`). Heartbeat OK; `expenses` and `corrections` created with cosine distance (metadata and configuration). The server reports API version 1.0.0 |
 | Ollama with `bge-m3` | Ollama 0.32.3, 1024-dimensional vectors. Warm-up with the model unloaded: 12.2 s; next request 0.5 s. `GET /health`: database, ChromaDB and Ollama `ok` |
@@ -527,6 +555,22 @@ Fine-tuning · enterprise microservices (API gateway, message broker, one databa
 ---
 
 ## 14. Changes
+
+### Version 1.4 (5 November 2026)
+
+After step 5b (accounts, invites, login and the API):
+- **§5:** username, password, JWT, login lockout, invite, stopping a member, last manager, one family per account, and 404 for other families' resources.
+- **§6.3:** `cached_tokens` recorded in `Usage` and `llm_calls`.
+- **§6.5:** one execution function, `execute_action`, for the buttons now and for chat in step 6; `cancel_action`.
+- **§8:** `GET /invites` and `DELETE /invites/{id}`; one error shape with its status codes; `/goals` belongs to step 8; `message_id` in `/chat`; the base-currency rule.
+- **§13:** results of the API run on Groq, and the answer on prompt caching.
+- **New columns, not yet in the §4 table:** `invites.revoked_at`, `members.failed_logins`, `members.locked_until`, `llm_calls.cached_tokens`.
+- **Decisions taken in step 5b, to be accepted:**
+  - 409 for the last manager, a taken username and a base-currency change; an unknown invite code is 404, and a used, revoked or expired one is 409.
+  - An action confirmed by another member of the same family answers 403, also when that member is a manager.
+  - If `execute_action` is refused, the action stays `pending` until it expires.
+  - The stopped account's failed logins are not counted, and an attempt during a lock is not counted either.
+  - `family_id`, `member_id` and `role` in a request body are ignored, not rejected.
 
 ### Version 1.3 (4 November 2026)
 
