@@ -21,3 +21,12 @@ data/chroma_db/
 # OS
 .DS_Store
 Thumbs.db
+
+# GP2
+baseline/data/
+backend/.venv/
+backend/.env
+backend/data/
+web/node_modules/
+web/dist/
+.pytest_cache/
