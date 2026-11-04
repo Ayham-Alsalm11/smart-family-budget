@@ -11,6 +11,7 @@ from app.services.errors import MissingFieldsError, ValidationError
 CENT = Decimal("0.01")
 RATE_STEP = Decimal("1e-10")
 MAX_AMOUNT = Decimal("1e12")  # Numeric(14, 2)
+MAX_RATE = Decimal("1e10")  # Numeric(20, 10)
 
 
 def to_money(value: Decimal | int | float | str) -> Decimal:
@@ -29,6 +30,18 @@ def parse_amount(value: object, field: str = "amount", allow_zero: bool = False)
     if not amount.is_finite() or amount < 0 or (amount == 0 and not allow_zero) or amount >= MAX_AMOUNT:
         raise ValidationError(f"invalid {field} {value!r}: must be {'≥' if allow_zero else '>'} 0")
     return to_money(amount)
+
+
+def parse_rate(value: object, field: str = "usd_rate") -> Decimal:
+    if isinstance(value, bool):
+        raise ValidationError(f"invalid {field} {value!r}", [field])
+    try:
+        rate = Decimal(str(value))
+    except InvalidOperation:
+        raise ValidationError(f"invalid {field} {value!r}", [field]) from None
+    if not rate.is_finite() or rate <= 0 or rate >= MAX_RATE:
+        raise ValidationError(f"invalid {field} {value!r}: must be > 0", [field])
+    return rate.quantize(RATE_STEP, rounding=ROUND_HALF_UP)
 
 
 def validate_currency(currency: str) -> str:

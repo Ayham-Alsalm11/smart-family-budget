@@ -142,7 +142,7 @@ def compare_months(
 
 def monthly_report(session: Session, ctx: ToolContext, month: str | None = None) -> dict:
     """Income, total, remaining and every category against its effective budget (for /summary)."""
-    from app.services.budgets import check_budget
+    from app.services.budgets import budget_alerts, check_budget
 
     year, number = parse_month(month) if month else (ctx.today.year, ctx.today.month)
     key = month_key(year, number)
@@ -156,5 +156,6 @@ def monthly_report(session: Session, ctx: ToolContext, month: str | None = None)
         "remaining": family.monthly_income - total,
         "spent_percent": _percent(total, family.monthly_income),
         "categories": budget["categories"],
+        "alerts": budget_alerts(budget["categories"]),
         "currency": family.base_currency,
     }

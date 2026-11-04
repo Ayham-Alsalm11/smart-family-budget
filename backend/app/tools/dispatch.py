@@ -99,9 +99,7 @@ def _add_expense(args: A.AddExpense, ctx: ToolContext, deps: ToolDeps) -> dict:
     )
     row = budgets.check_budget(deps.session, ctx, category=added["category"],
                                period=added["expense_date"][:7])["categories"][0]
-    alerts = [] if row["status"] == "ok" else [
-        {key: row[key] for key in ("category", "status", "spent", "limit", "percent_used")}]
-    return {"expense": {**_brief(added), "amount_base": added["amount_base"]}, "alerts": alerts}
+    return {"expense": {**_brief(added), "amount_base": added["amount_base"]}, "alerts": budgets.budget_alerts([row])}
 
 
 def _edit_expense(args: A.EditExpense, ctx: ToolContext, deps: ToolDeps) -> dict:

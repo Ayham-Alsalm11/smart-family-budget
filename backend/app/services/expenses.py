@@ -1,6 +1,6 @@
 """Expenses: add, get, list, update, delete, with the permission rules of §5.
 
-Confirmation of edits and deletions (§6.5) is not handled here; it comes in step 6.
+Confirmation of edits and deletions (§6.5) is not handled here: `services/pending.py` runs on top of these.
 The embedder and the vector store are passed in (dependency injection); when embedding fails
 the expense is still recorded, with `embedded_at` left empty for `reindex_missing`.
 """
@@ -21,7 +21,7 @@ from app.services.periods import Period, parse_date, resolve_period
 log = logging.getLogger(__name__)
 
 EDITABLE_FIELDS = frozenset({"amount", "category", "currency", "date", "description"})
-MAX_LIST_LIMIT = 100
+MAX_LIST_LIMIT = 200  # for the API; the tool's own argument stops at 100
 
 
 class Embedder(Protocol):
@@ -244,10 +244,13 @@ def list_expenses(
     category: str | None = None,
     member: int | str | None = None,
     limit: int = 10,
+    offset: int = 0,
 ) -> dict:
     """Newest first. Members see only their own expenses."""
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_LIST_LIMIT:
         raise ValidationError(f"limit must be between 1 and {MAX_LIST_LIMIT}")
+    if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+        raise ValidationError("offset must be 0 or more")
     member_id = resolve_member_filter(session, ctx, member)
     if not ctx.is_manager:
         member_id = ctx.member_id
@@ -261,7 +264,8 @@ def list_expenses(
         query = query.where(Expense.category_id == get_category(session, category).id)
     if member_id is not None:
         query = query.where(Expense.member_id == member_id)
-    rows = session.scalars(query.order_by(Expense.expense_date.desc(), Expense.id.desc()).limit(limit)).all()
+    rows = session.scalars(
+        query.order_by(Expense.expense_date.desc(), Expense.id.desc()).limit(limit).offset(offset)).all()
     return {
         "period": span.as_dict() if span else None,
         "expenses": [expense_to_dict(e) for e in rows],

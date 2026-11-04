@@ -32,6 +32,17 @@ def effective_limit(session: Session, family: Family, category: Category, month:
     return to_money(family.monthly_income * category.budget_percent / 100), "income_percent"
 
 
+def list_budgets(session: Session, ctx: ToolContext, month: str | None = None) -> dict:
+    """The effective limit of every category and where it comes from. Family level (§5)."""
+    key = _month_of(ctx, month or "this_month")
+    family = get_family(session, ctx)
+    budgets = []
+    for category in session.scalars(select(Category).order_by(Category.id)):
+        limit, source = effective_limit(session, family, category, key)
+        budgets.append({"category": category.name_ar, "limit": limit, "source": source})
+    return {"month": key, "currency": family.base_currency, "budgets": budgets}
+
+
 def set_budget(
     session: Session,
     ctx: ToolContext,
@@ -83,6 +94,12 @@ def _status(spent: Decimal, limit: Decimal) -> tuple[Decimal | None, str]:
     if used >= WARNING_PERCENT:
         return used, "warning"
     return used, "ok"
+
+
+def budget_alerts(rows: list[dict]) -> list[dict]:
+    """The rows of `check_budget` at `warning` or `over`."""
+    return [{key: row[key] for key in ("category", "status", "spent", "limit", "percent_used")}
+            for row in rows if row["status"] != "ok"]
 
 
 def check_budget(

@@ -1,14 +1,21 @@
-"""Pending edits and deletions (§6.5). Step 5a creates them; confirming them comes in step 6."""
+"""Pending edits and deletions (§6.5): created by the tools, executed or cancelled here.
+
+`execute_action` is the only way a pending action runs. The confirm button uses it now; confirmation in chat
+will use the same function in step 6.
+"""
 from datetime import timedelta
 from typing import Any
 
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.agent.context import ToolContext
 from app.db.models import PendingAction, utcnow
 from app.services.currency import parse_amount, validate_currency
-from app.services.errors import ValidationError
-from app.services.expenses import EDITABLE_FIELDS, get_category, get_expense
+from app.services.errors import ConflictError, ForbiddenError, NotFoundError, ServiceError, ValidationError
+from app.services.expenses import (
+    EDITABLE_FIELDS, Embedder, VectorStore, delete_expense, get_category, get_expense, update_expense,
+)
 from app.services.periods import parse_date
 
 CONFIRMATION_MINUTES = 10
@@ -55,3 +62,59 @@ def request_change(
     session.commit()
     preview = {key: current[key] for key in ("id", "amount", "currency", "category", "expense_date", "description")}
     return {"confirmation_id": action.id, "action": tool_name, "expense": preview, "changes": changes}
+
+
+def _open_action(session: Session, ctx: ToolContext, action_id: int) -> PendingAction:
+    """The caller's own action, still pending and not past its time. A late one becomes `expired` for good."""
+    action = session.get(PendingAction, action_id)
+    if action is None or action.family_id != ctx.family_id:
+        raise NotFoundError(f"action #{action_id} not found")
+    if action.member_id != ctx.member_id:
+        raise ForbiddenError("only the member who asked for this action can confirm or cancel it")
+    if action.status == "pending" and action.expires_at <= utcnow():
+        action.status = "expired"
+        session.commit()
+    if action.status != "pending":
+        raise ConflictError(f"action #{action_id} is already {action.status}")
+    return action
+
+
+def _claim(session: Session, action: PendingAction, status: str) -> None:
+    """One conditional UPDATE, so that two parallel confirmations cannot both run."""
+    claimed = session.execute(
+        update(PendingAction).where(PendingAction.id == action.id, PendingAction.status == "pending")
+        .values(status=status)
+    ).rowcount
+    if not claimed:
+        session.rollback()
+        raise ConflictError(f"action #{action.id} is not pending any more")
+
+
+def execute_action(
+    session: Session,
+    ctx: ToolContext,
+    action_id: int,
+    embedder: Embedder | None = None,
+    vector_store: VectorStore | None = None,
+) -> dict:
+    """Run a pending edit or deletion. `update_expense` and `delete_expense` check again that the permission
+    still holds; if they refuse, nothing changes and the action stays pending until it expires."""
+    action = _open_action(session, ctx, action_id)
+    _claim(session, action, "confirmed")
+    arguments = action.arguments
+    try:
+        if action.tool_name == "edit_expense":
+            result = update_expense(session, ctx, arguments["expense_id"], arguments["changes"], embedder, vector_store)
+        else:
+            result = delete_expense(session, ctx, arguments["expense_id"], vector_store)
+    except ServiceError:
+        session.rollback()
+        raise
+    return {"id": action_id, "status": "confirmed", "action": action.tool_name, "expense": result}
+
+
+def cancel_action(session: Session, ctx: ToolContext, action_id: int) -> dict:
+    action = _open_action(session, ctx, action_id)
+    _claim(session, action, "cancelled")
+    session.commit()
+    return {"id": action_id, "status": "cancelled", "action": action.tool_name}
