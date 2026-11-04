@@ -212,6 +212,8 @@ def _validation_error(name: str, model: type[A.Arguments], exc: pydantic.Validat
         field = str(error["loc"][0]) if error["loc"] else ""
         if error["type"] == "missing" or (error.get("input") is None and field in required):
             missing.append(field)
+        elif error["type"] == "literal_error" and field == "category":
+            problems.append(f"category {error.get('input')!r} is not one of the 12 categories in the system prompt")
         else:
             location = ".".join(str(part) for part in error["loc"])
             problems.append(f"{location}: {error['msg']}"[:160])

@@ -7,9 +7,33 @@ from datetime import date, timedelta
 
 from app.db.categories import CATEGORY_NAMES
 
+# 2-4 short keywords per category, taken from db/categories.py. This is the only place the model sees
+# the 12 names: the tool schemas have no category enum (§7.1).
+CATEGORY_HINTS = {
+    "أكل وشرب": ["خضرا", "لحمة", "مطعم", "خبز"],
+    "بنزين ومواصلات": ["بنزين", "تكسي", "سرفيس"],
+    "فواتير": ["كهربا", "ماي", "نت", "اشتراك"],
+    "إيجار": ["إيجار", "بيت"],
+    "صحة": ["دكتور", "صيدلية", "دوا"],
+    "تعليم": ["مدرسة", "جامعة", "كتب"],
+    "ملابس": ["ثياب", "حذاء"],
+    "ترفيه": ["سينما", "رحلة", "كافيه"],
+    "ادخار": ["توفير"],
+    "هدايا ومناسبات": ["هدية", "عرس", "عيد"],
+    "صيانة": ["تصليح", "سباك", "دهان"],
+    "متفرقات": [],
+}
+assert list(CATEGORY_HINTS) == CATEGORY_NAMES
+
+
+def categories_line() -> str:
+    return "; ".join(f"{name} ({'، '.join(words)})" if words else f"{name} (anything else)"
+                     for name, words in CATEGORY_HINTS.items())
+
+
 SYSTEM_PROMPT = """You are "ميزان", a household budget assistant for one family. Reply to the user in short Syrian Arabic.
 Today: {today} ({weekday}). Base currency: {base_currency}. Currencies: SYP_OLD (old Syrian pound), SYP_NEW (new pound, 1 new = 100 old), USD.
-Categories: {categories}.
+Categories (keywords): {categories}.
 
 Rules:
 - Every number you state must come from a tool result in this turn. Never compute or invent totals.
@@ -34,5 +58,5 @@ def build_system_prompt(today: date, base_currency: str, corrections: list[str] 
         block = "Past corrections in this family (follow them):\n" + "\n".join(f"- {c}" for c in corrections[:3]) + "\n"
     return SYSTEM_PROMPT.format(
         today=today.isoformat(), weekday=today.strftime("%A"), yesterday=(today - timedelta(days=1)).isoformat(),
-        base_currency=base_currency, categories="، ".join(CATEGORY_NAMES), corrections=block,
+        base_currency=base_currency, categories=categories_line(), corrections=block,
     )

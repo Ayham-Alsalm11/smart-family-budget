@@ -5,11 +5,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.db.categories import CATEGORY_NAMES
 from app.db.models import CURRENCIES
-from app.tools.schemas import MISSING_FIELDS
 
 Category = Literal[tuple(CATEGORY_NAMES)]
 Currency = Literal[tuple(CURRENCIES)]
-MissingField = Literal[MISSING_FIELDS]
 
 
 class Arguments(BaseModel):
@@ -96,4 +94,4 @@ class SetBudget(Arguments):
 
 class AskClarification(Arguments):
     question: str = Field(min_length=1)
-    missing_fields: list[MissingField] = Field(min_length=1)
+    missing_fields: list[str] = Field(min_length=1)  # free text: informational only

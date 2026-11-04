@@ -21,13 +21,30 @@ def test_schemas():
     assert len(TOOL_SCHEMAS) == 11 and set(TOOL_NAMES) == set(TOOLS)
     text = json.dumps(TOOL_SCHEMAS, ensure_ascii=False)
     assert "family_id" not in text and "member_id" not in text
-    add = TOOL_SCHEMAS[0]["function"]["parameters"]
-    assert add["properties"]["category"]["enum"] == CATEGORY_NAMES and add["required"] == ["amount", "category"]
+    assert "null" not in text and CATEGORY_NAMES[0] not in text, "no null, and no category enum (§7.1)"
+    assert TOOL_SCHEMAS[0]["function"]["parameters"]["required"] == ["amount", "category"]
+    for schema in TOOL_SCHEMAS:
+        parameters = schema["function"]["parameters"]
+        for name, prop in parameters["properties"].items():
+            if name not in parameters.get("required", []):
+                assert "omit" in prop.get("description", ""), f"{schema['function']['name']}.{name}"
+
+
+def test_prompt_lists_each_category_once_with_its_keywords():
+    from datetime import date
+    from app.agent.prompts import CATEGORY_HINTS, build_system_prompt
+    from app.db.categories import CATEGORIES
+    prompt = build_system_prompt(date(2026, 11, 4), "SYP_OLD")
+    for category in CATEGORIES:
+        assert prompt.count(f"{category['name_ar']} (") == 1
+        assert 0 < len(CATEGORY_HINTS[category["name_ar"]]) <= 4 or not category["keywords"]
+        assert set(CATEGORY_HINTS[category["name_ar"]]) <= set(category["keywords"])
 
 
 @pytest.mark.parametrize("name, arguments, code", [
     ("add_expense", {"amount": -5, "category": FOOD}, "invalid_args"),
     ("add_expense", {"amount": 5, "category": "طعام"}, "invalid_args"),
+    ("add_expense", {"amount": 5, "category": "بنزين"}, "invalid_args"),
     ("add_expense", {"category": FOOD}, "missing_fields"),
     ("add_expense", {"amount": None, "category": FOOD}, "missing_fields"),
     ("add_expense", {"amount": 5, "category": FOOD, "family_id": 2}, "invalid_args"),
@@ -44,7 +61,7 @@ def test_schemas():
     ("search_expenses", {"query": ""}, "invalid_args"),
     ("check_budget", {"period": "this_year"}, "invalid_args"),
     ("set_budget", {"category": "ترفيهات", "amount": 5}, "invalid_args"),
-    ("ask_clarification", {"question": "شو؟", "missing_fields": ["color"]}, "invalid_args"),
+    ("ask_clarification", {"question": "شو؟", "missing_fields": []}, "invalid_args"),
 ])
 def test_invalid_arguments(session, manager_ctx, name, arguments, code):
     result = dispatch(name, arguments, manager_ctx, ToolDeps(session))
