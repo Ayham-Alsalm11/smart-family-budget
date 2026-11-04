@@ -2,7 +2,7 @@
 
 **Project:** Family Budget Agent (Graduation Project 2)
 **Author:** Ayham Al-Salem · **Supervisors:** Dr. Nasreen Suleiman, Eng. Zainab Baghdadi
-**Version:** 1.1 · 4 November 2026 · **Branch:** `gp2-agent` · Changes since 1.0 are listed in §14.
+**Version:** 1.2 · 4 November 2026 · **Branch:** `gp2-agent` · Changes since 1.0 are listed in §14.
 
 This document turns the methodology of *Report Part 1* (Chapter 4) into a specification that the code is written from. It records every architectural decision taken after Seminar 1. When the code and this document disagree, fix one of them; do not leave them out of sync.
 
@@ -13,7 +13,8 @@ This document turns the methodology of *Report Part 1* (Chapter 4) into a specif
 | # | Decision |
 |---|---|
 | D1 | Build on the Graduation Project 1 (GP1) repository. GP1 is moved unchanged into `baseline/` and stays runnable: it is the baseline for RQ2. |
-| D2 | The fixed pipeline is replaced by a ReAct tool-calling agent. Llama 3.3 70B through the Groq API is the main model; Llama 3.1 8B is compared in the same agent. No fine-tuning. |
+| D2 | The fixed pipeline is replaced by a ReAct tool-calling agent. **`openai/gpt-oss-120b`** through the Groq API is the main model; **`openai/gpt-oss-20b`**, from the same family, is compared in the same agent. No fine-tuning. *Why not Llama, as planned in Report Part 1:* Groq withdrew Llama 3.3 70B and Llama 3.1 8B from its free and developer tiers on 16 August 2026 (enterprise only); the project's key gets 404 for both. Groq names the two gpt-oss models as their replacements. |
+| D14 | The project runs on **Groq's free tier** only (no payment possible). Every design and evaluation choice must fit its per-model limits (§9.5). |
 | D3 | Every number is computed by SQL inside a tool. The LLM never produces a number that a tool did not return. |
 | D4 | Four services under Docker Compose: `web` (React), `agent-api` (FastAPI), `vector-db` (ChromaDB), `embeddings` (Ollama + BGE-M3). |
 | D5 | Family accounts: one family, several members. Two roles: **manager** and **member**. Members join with an invite code created by a manager. |
@@ -23,7 +24,7 @@ This document turns the methodology of *Report Part 1* (Chapter 4) into a specif
 | D9 | Advice has no separate tool: the agent calls the data tools first and advises from their results. The unsourced percentages in GP1's prompt are removed. |
 | D10 | Currencies: old Syrian pound, new Syrian pound and US dollar. Old ↔ new is fixed (two zeros removed: 1 new = 100 old). The USD rate is set by the family manager, not fetched from the internet. |
 | D11 | Scope is frozen by the priorities in §11. A lower priority never starts before the higher one works. If time runs short, cut from the bottom. |
-| D12 | The baseline is frozen: its bugs are **not** fixed, because they are part of what RQ2 measures. Its only change is two environment overrides (§3.1). It keeps the existing root `venv/`; GP2 uses its own `backend/.venv`. |
+| D12 | The baseline is frozen: its bugs are **not** fixed, because they are part of what RQ2 measures. Its only changes are environment overrides (§3.1): two for paths, and, from step 8, one for the model name, because GP1 hard-codes the Llama ID that Groq no longer serves. It keeps the existing root `venv/`; GP2 uses its own `backend/.venv`. |
 | D13 | Git history is not rewritten (the large `venv` files from the first commit stay), so that `gp1-final` and the repository link already given to the university remain valid. |
 
 ---
@@ -37,7 +38,7 @@ flowchart LR
     A --> DB[(SQLite<br/>volume)]
     A -- HTTP --> V[vector-db<br/>ChromaDB server]
     A -- HTTP --> E[embeddings<br/>Ollama · BGE-M3]
-    A -- HTTPS --> G[Groq API<br/>Llama 3.3 70B / 3.1 8B]
+    A -- HTTPS --> G[Groq API · free tier<br/>gpt-oss-120b / gpt-oss-20b]
 ```
 
 | Service | Contents | Port (dev) | Persistent volume |
@@ -121,6 +122,10 @@ smart-family-budget/
 - `BASELINE_CHROMA_DIR` → `CHROMA_PERSIST_DIR`.
 
 Without them set, GP1 behaves exactly as before. The RQ2 experiment sets both, so that GP1 reads the evaluation database **and** an evaluation ChromaDB. Otherwise GP1's query context would include its own unrelated stored expenses (§9.2).
+
+**Third override, added in step 8:** `BASELINE_LLM_MODEL`. GP1 hard-codes `llama-3.3-70b-versatile` in `src/llm/parser.py` and `src/chat/engine.py`, and Groq no longer serves it (D2). In RQ2, GP1 therefore runs with the agent's main model, so that both systems use the same model and only the architecture differs. Without the variable, GP1 keeps its original ID. GP1's thesis results (Llama 3.3 70B) stay as the historical record; the RQ2 numbers come from the new run.
+
+**Risk to check in step 8:** gpt-oss models spend part of `max_tokens` on reasoning. GP1's parser allows only `max_tokens=200`, so outputs could be cut before the JSON ends. A pilot run on 20 of GP1's sentences decides. If truncation appears, the override may also need GP1's reasoning effort, set to the same value as the agent's; that change would be documented here before the run.
 
 **Running the baseline:** from inside `baseline/` with the root environment, e.g. `cd baseline` then `..\venv\Scripts\python -m streamlit run app.py`. Running from the repository root fails on `from config import …`. `venv/` is not moved, because it contains absolute paths.
 
@@ -240,7 +245,7 @@ flowchart TD
 
 - The loop is plain Python with direct function calling, without a heavy agent framework, so that every step can be traced and evaluated (Report Part 1, §4.3.1).
 - At most **6 LLM steps** per message. Several tool calls returned in one step are executed in order.
-- Tool decisions use **temperature 0**. `max_tokens` = 1024.
+- Tool decisions use **temperature 0** (where the model accepts it) and **`reasoning_effort=low`** (§6.3). `max_tokens` = 1024, which includes reasoning tokens.
 - An invalid call (unknown tool, missing or wrong-typed argument) is not executed. The validation error goes back to the model as the tool result and counts as a step.
 - `ask_clarification` ends the turn: its `question` is the reply.
 - Each request carries a `ToolContext(family_id, member_id, role, today, model, message_id)`. Tools receive it from the server. It is never part of the tool schemas the LLM sees.
@@ -248,9 +253,11 @@ flowchart TD
 ### 6.3 LLM client (`llm/client.py`)
 
 - Groq OpenAI-compatible chat completions with the `tools` parameter (native function calling).
-- Models in a registry: `main` = `llama-3.3-70b-versatile` (the GP1 model ID); `small` = the current Groq ID for Llama 3.1 8B (to be confirmed in week 1).
+- Models in a registry: `main` = `openai/gpt-oss-120b`; `small` = `openai/gpt-oss-20b` (D2). Both answered a native tool call with valid JSON arguments in step 4b.
+- `reasoning_effort` is a setting (`REASONING_EFFORT`, default `low`). In step 4b, `low` cut completion tokens by about 40 % on both models and the tool call stayed correct. That was one sentence only; step 5 confirms it on more examples before it is fixed for the evaluation.
+- Every call records `usage` (prompt, completion and reasoning tokens) in `llm_calls`, because the token budget decides the size of the evaluation (§9.5).
 - **Fallback mode:** if native tool calling proves unreliable for a model, the client switches to a JSON-in-text mode with the same schemas. The loop does not change.
-- Timeout 30 s. Up to 3 retries with exponential backoff and jitter; on HTTP 429, wait for the `retry-after` header when present. Every attempt is written to `llm_calls`. A request that still fails returns a friendly message and is **counted as a failure** in evaluation. During evaluation runs, a Groq tier with higher rate limits is used if needed (Report Part 1, §4.3).
+- Timeout 30 s. Up to 3 retries with exponential backoff and jitter; on HTTP 429, wait for the `retry-after` header when present. Every attempt is written to `llm_calls`. A request that still fails returns a friendly message and is **counted as a failure** in evaluation. A client-side limiter keeps each model under its per-minute token limit, using the `x-ratelimit-*` response headers, so that 429 errors are avoided rather than retried. Report Part 1 (§4.3) allowed a tier with higher limits during evaluation; that is not possible (D14), so the evaluation is planned within the free tier (§9.5).
 
 ### 6.4 System prompt (`agent/prompts.py`)
 
@@ -417,14 +424,30 @@ Every tool returns JSON: `{"ok": true, "data": …}` or `{"ok": false, "error": 
 
 | Question | Setup |
 |---|---|
-| **RQ2** | `numeric_questions` on GP1 (`baseline/`, its own fixed summary) vs the agent; both with Llama 3.3 70B, on the same evaluation database |
-| **RQ1** | `expenses`, `tool_cases` and `numeric_questions` with the agent on 70B vs 8B; same prompts and tools |
+| **RQ2** | `numeric_questions` on GP1 (`baseline/`, its own fixed summary) vs the agent; both with `gpt-oss-120b`, on the same evaluation database |
+| **RQ1** | `expenses`, `tool_cases` and `numeric_questions` with the agent on `gpt-oss-120b` vs `gpt-oss-20b`; same prompts, tools and reasoning effort. The question is unchanged from Report Part 1: whether a smaller model of the same family approaches the larger one inside the same agent |
 | **RQ3** | `correction_sequences` with `CORRECTIONS_ENABLED` off vs on; same order; error rate over the sequence |
 | Clarification | Structural only vs structural + sampling (*n* = 3, *n* = 5) |
 
 Every run writes `results/<run_id>/` with its configuration, model, git commit, per-item outputs and the summary. Requests are spaced to respect rate limits.
 
-**Running GP1 in RQ2:** the runner calls GP1 from inside `baseline/` with the root `venv`, `PYTHONIOENCODING=utf-8`, and both `BASELINE_*` variables set. Ollama is warmed up first. Each item is wrapped in `try/except`, so a GP1 crash (e.g. A1) is recorded as a failure, as in GP1's own evaluation.
+**Running GP1 in RQ2:** the runner calls GP1 from inside `baseline/` with the root `venv`, `PYTHONIOENCODING=utf-8`, and the `BASELINE_*` variables set (paths and model). Ollama is warmed up first. Each item is wrapped in `try/except`, so a GP1 crash (e.g. A1) is recorded as a failure, as in GP1's own evaluation.
+
+### 9.5 Working within Groq's free tier (D14)
+
+**Limits per model** (each model has its own quota):
+- **Seen in the response headers in step 4b:** 1,000 requests a day, and 8,000 tokens a minute.
+- **Reported in Groq's published free-plan table:** 30 requests a minute, and 200,000 tokens a day. To be confirmed from the headers in step 5.
+
+**What follows:** with about 200,000 tokens a day, the binding limit is **tokens per day**. For example, at 2,500 tokens per agent call that is about 80 calls a day per model, and at 1,250 tokens about 160. So:
+
+1. **Lean calls:** a short system prompt, short tool descriptions, and `reasoning_effort=low`. **Target: ≤ 1,500 tokens per call on average.** Step 5 measures the real figure on a fixed set of 20 messages.
+2. **Quota for final runs:** development uses a mocked LLM in tests and `gpt-oss-20b` for manual trials. `gpt-oss-120b` is kept for the final runs, as far as possible.
+3. **Resumable runs:** every item's result is saved as soon as it is computed. A run that reaches the daily limit stops cleanly and continues the next day from the next item. Long runs go overnight.
+4. **Single-step extraction:** `expenses.jsonl` is scored on the first tool call only, without generating the reply text.
+5. **Sampling clarification:** *n* = 3 on a subset (all unclear cases plus the same number of clear ones). *n* = 5 only if the budget allows.
+6. **Sizes from the budget:** after step 5, the calls each experiment needs are counted, and the final dataset sizes are fixed within the days available (Report Part 1 already calls the sizes targets to be confirmed with the supervisors). Runs start as soon as each dataset file is frozen, not at the end.
+7. **Fallback for the small model:** if the laptop has at least 16 GB of RAM, `gpt-oss-20b` can also run locally through Ollama, without a quota. It would be used only if the cloud quota runs out, and the report would state it.
 
 ---
 
@@ -450,7 +473,8 @@ Every run writes `results/<run_id>/` with its configuration, model, git commit, 
 | 3 · Architecture | 2–3 Nov | This document | Approved |
 | 4a · Repository restructure | 4–5 Nov | Pull `origin/main`; branch `gp2-agent`; remove tracked `__pycache__`, empty `utils.py` and `{src…` folders; `git mv` GP1 into `baseline/` (PDF report → `docs/`); move `data/` by hand; commit the 15 May run; add the two `BASELINE_*` overrides; `.gitignore` and `pytest.ini`; commit this document; push the branch | Baseline still reads its family (income 500,000) and its 5 ChromaDB entries from `baseline/data/`; branch on GitHub |
 | 4b · Backend foundation | 5–8 Nov | `backend/.venv` with pinned requirements; skeleton, settings, `.env`; models and seed; services for expenses and reports with pytest on a temporary database; ChromaDB server with cosine collections; Ollama warm-up; Groq tool-calling smoke test with both models | `pytest` green; ChromaDB and Ollama reachable; both model IDs answer a tool call |
-| 5 · Tools and ReAct loop | 7–18 Nov | 11 core tools; LLM client; loop; CLI; `/chat`; accounts, invites and permissions | Multi-step example from Report Part 1 §4.3.1 works; permission tests pass |
+| 5a · LLM client, tools and ReAct loop | 5–12 Nov | Groq client with limiter and usage logging; the 11 core tools with schemas; the loop with grounding check; system prompt; CLI; tests with a mocked LLM; token measurement on 20 fixed messages | Multi-step example from Report Part 1 §4.3.1 works through the CLI; average tokens per call measured |
+| 5b · Accounts and chat API | 12–18 Nov | Registration, invites, login (JWT), roles; `/chat` and the other §8 endpoints; permission tests through the API | Two members of one family see what §5 allows, through the API |
 | 6 · Clarification and memory | 15–22 Nov | Structural clarification, `messages` memory, confirmations | "دفعت 50 لأبو أحمد" → question → answer linked; edit and delete need confirmation |
 | 7 · Evaluation dataset | from 3 Nov, in parallel | Guidelines (3–5 Nov); 20–30 sentences a day; generator and numeric questions by 25 Nov; tool cases by 1 Dec; second-annotator sample by 3 Dec | Files frozen |
 | 8 · Experiments RQ2, RQ1 + financial basic | 23 Nov – 6 Dec | Eval runners; RQ2; RQ1; sampling clarification; savings goals; `get_insights` | Result tables for RQ2 and RQ1 |
@@ -472,7 +496,10 @@ Fine-tuning · enterprise microservices (API gateway, message broker, one databa
 
 | Item | Status (step 4b, 4 Nov) |
 |---|---|
-| Groq model ID for Llama 3.1 8B, and native tool calling with both models | **Llama is not available.** Groq's `/models` for this project lists neither `llama-3.3-70b-versatile` (a request returns 404 `model_not_found`) nor any Llama 3.1 8B. Chosen instead: `MODEL_MAIN` = `openai/gpt-oss-120b`, `MODEL_SMALL` = `openai/gpt-oss-20b`. With "دفعت 5000 بنزين" and one `add_expense` tool, both return a native tool call with valid JSON arguments `{amount: 5000, category: "بنزين ومواصلات"}`, at the default reasoning effort and at `reasoning_effort=low`. Default → low: 120b 91 → 57 completion tokens (51 → 17 reasoning), 0.58 → 0.44 s; 20b 95 → 54 (62 → 21), 0.40 → 0.28 s; prompt 208 tokens. Rate-limit headers: 1,000 requests (daily window) and 8,000 tokens per minute per model. **To update in v1.2:** D2, §6.3, §9.4 (RQ1 70B vs 8B, RQ2 "both with Llama 3.3 70B"), and running GP1 in RQ2 with the agent's main model through a `BASELINE_LLM_MODEL` override (GP1 hard-codes the Llama ID, so it cannot call Groq unchanged) |
+| Groq model ID for Llama 3.1 8B, and native tool calling with both models | **Llama is not available.** Groq's `/models` for this project lists neither `llama-3.3-70b-versatile` (a request returns 404 `model_not_found`) nor any Llama 3.1 8B. Chosen instead: `MODEL_MAIN` = `openai/gpt-oss-120b`, `MODEL_SMALL` = `openai/gpt-oss-20b`. With "دفعت 5000 بنزين" and one `add_expense` tool, both return a native tool call with valid JSON arguments `{amount: 5000, category: "بنزين ومواصلات"}`, at the default reasoning effort and at `reasoning_effort=low`. Default → low: 120b 91 → 57 completion tokens (51 → 17 reasoning), 0.58 → 0.44 s; 20b 95 → 54 (62 → 21), 0.40 → 0.28 s; prompt 208 tokens. Rate-limit headers: 1,000 requests (daily window) and 8,000 tokens per minute per model. **Resolved in v1.2:** D2, D12, D14, §3.1, §6.2, §6.3, §9.4 and §9.5 |
+| Daily token limit per model (reported as 200,000) | Open: read from the response headers in step 5 |
+| Average tokens per agent call | Open: measured in step 5 on 20 fixed messages (target ≤ 1,500) |
+| Laptop RAM for running `gpt-oss-20b` locally | Open (fallback only, §9.5) |
 | ChromaDB client and server versions | `chromadb` 1.5.7 in `backend/.venv` for client and server (`chroma run --path data\chroma --port 8001`). Heartbeat OK; `expenses` and `corrections` created with cosine distance (metadata and configuration). The server reports API version 1.0.0 |
 | Ollama with `bge-m3` | Ollama 0.32.3, 1024-dimensional vectors. Warm-up with the model unloaded: 12.2 s; next request 0.5 s. `GET /health`: database, ChromaDB and Ollama `ok` |
 | Node.js and npm | Not installed; needed before step 9 |
@@ -482,7 +509,29 @@ Fine-tuning · enterprise microservices (API gateway, message broker, one databa
 
 ---
 
-## 14. Changes in version 1.1 (4 November 2026)
+## 14. Changes
+
+### Version 1.2 (4 November 2026)
+
+After step 4b:
+- **Models:** D2 now names `gpt-oss-120b` and `gpt-oss-20b`, with the reason (Groq withdrew Llama from the free and developer tiers on 16 August 2026). §1 diagram, §6.3 and §9.4 follow. RQ1 keeps its question with the new pair.
+- **D14 and §9.5:** free tier only; a per-day token budget; lean calls; resumable runs; dataset sizes fixed from measured budgets.
+- **D12 and §3.1:** a third baseline override for the model name (step 8), and the risk of reasoning tokens with GP1's `max_tokens=200`.
+- **§6.2 and §6.3:** `reasoning_effort=low` as a setting; token usage stored per call; client-side rate limiting.
+- **Decisions taken with the student in step 4b:**
+  - `last_3_months` is the current month and the two before it.
+  - Calendar periods cover the whole week, month or year.
+  - `compare_months` orders the two months in time: the earlier one is the reference, and the change is null when its total is zero.
+  - A USD expense without a family rate raises `MissingFieldsError(["usd_rate"])`; the demo family has no rate.
+  - Seed passwords come from `SEED_MANAGER_PASSWORD` and `SEED_MEMBER_PASSWORD`, and the seed stops if they are missing.
+- **Decisions taken in step 4b and accepted:**
+  - Budget status: `ok` below 80 %, `warning` from 80 %, `over` from 100 %.
+  - `pending_actions.status` ∈ {`pending`, `confirmed`, `cancelled`, `expired`}, and `tool_log` also allows `ungrounded`.
+  - Rate columns are `Numeric(20, 10)`.
+  - Editing only the amount keeps the stored rate; changing the currency uses the current rate.
+  - `reindex_missing` stops at the first failure.
+
+### Version 1.1 (4 November 2026)
 
 From the code and environment review of GP1 before step 4:
 - D12 and D13 added: frozen baseline with two environment overrides; separate Python environments; no rewriting of git history.
