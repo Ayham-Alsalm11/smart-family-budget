@@ -1,9 +1,9 @@
 from sqlalchemy import select
 
 from app.agent.grounding import extract_numbers, ungrounded_numbers
-from app.agent.loop import REPLY_LLM_ERROR, REPLY_STEP_LIMIT, run_turn
+from app.agent.loop import REPLY_LLM_ERROR, REPLY_STEP_LIMIT, REPLY_TOOL_REJECTED, run_turn
 from app.db.models import Expense, LlmCall, Message, PendingAction, ToolLog
-from app.llm.client import LLMRateLimitError, ToolCall
+from app.llm.client import LLMRateLimitError, LLMToolValidationError, ToolCall
 from app.services import expenses
 
 from fake_llm import FakeLLM, call, respond
@@ -117,6 +117,38 @@ def test_llm_failure_is_a_counted_failure(session, member_ctx):
     assert turn.reply == REPLY_LLM_ERROR
     assert session.scalars(select(LlmCall)).one().status == "rate_limited"
     assert len(session.scalars(select(Message)).all()) == 2
+
+
+def rejected(tool="ask_clarification"):
+    return LLMToolValidationError(
+        f"tool_use_failed: Tool call validation failed: tool call validation failed: parameters for tool {tool} "
+        "did not match schema: errors: [`/missing_fields/0`: value must be one of 'amount', 'category']", 400)
+
+
+def test_provider_rejection_is_corrected_by_the_model(session, member_ctx):
+    turn, llm = run(session, member_ctx, "دفعت 50 لأبو أحمد", [
+        rejected(),
+        respond(call("ask_clarification", question="على شو دفعت الـ 50؟", missing_fields=["category"])),
+    ])
+    assert turn.ended_by == "clarification" and turn.reply == "على شو دفعت الـ 50؟"
+    assert [(s.step, s.tool, s.status) for s in turn.steps] == [(1, "ask_clarification", "invalid_args"),
+                                                                 (2, "ask_clarification", "ok")]
+    feedback = llm.requests[1][-1]
+    assert feedback["role"] == "user" and feedback["content"].startswith("Your last tool call was rejected: parameters")
+    assert "Fix the arguments or omit optional ones" in feedback["content"]
+    logs = session.scalars(select(ToolLog).order_by(ToolLog.id)).all()
+    assert [(log.tool_name, log.status) for log in logs] == [("ask_clarification", "invalid_args"),
+                                                            ("ask_clarification", "ok")]
+    assert session.scalars(select(LlmCall).order_by(LlmCall.id)).first().status == "tool_use_failed"
+
+
+def test_provider_rejection_gives_up_after_two_corrections(session, member_ctx):
+    turn, llm = run(session, member_ctx, "امسح آخر مصروف", [rejected(), rejected("list_expenses"), rejected()])
+    assert turn.ended_by == "tool_rejected"
+    assert turn.reply == REPLY_TOOL_REJECTED != REPLY_LLM_ERROR
+    assert len(llm.requests) == 3
+    assert [log.status for log in session.scalars(select(ToolLog))] == ["invalid_args"] * 3
+    assert session.scalars(select(Message).where(Message.role == "assistant")).one().content == REPLY_TOOL_REJECTED
 
 
 def test_pending_action_and_alerts_reach_the_turn(session, member_ctx):

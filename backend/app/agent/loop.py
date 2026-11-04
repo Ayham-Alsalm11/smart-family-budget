@@ -6,6 +6,7 @@ goes to `llm_calls`, every tool call to `tool_log`, and the user message and the
 Sending earlier turns to the model (§6.8) comes in step 6.
 """
 import json
+import re
 import time
 from dataclasses import dataclass, field, replace
 from typing import Any
@@ -16,13 +17,24 @@ from app.agent.context import ToolContext
 from app.agent.grounding import ungrounded_numbers
 from app.agent.prompts import build_system_prompt
 from app.db.models import Family, LlmCall, Message, ToolLog
-from app.llm.client import Attempt, LLMError, Usage
+from app.llm.client import Attempt, LLMError, LLMToolValidationError, Usage
 from app.tools.dispatch import ToolDeps, dispatch
 from app.tools.schemas import TOOL_SCHEMAS
 
 REPLY_STEP_LIMIT = "عذراً، ما قدرت كمّل هالطلب. فيك تكتبه بشكل أبسط؟"
 REPLY_LLM_ERROR = "عذراً، في مشكلة بالاتصال هلق. جرّب كمان شوي."
 REPLY_EMPTY = "عذراً، ما فهمت عليك. فيك توضّح أكتر؟"
+REPLY_TOOL_REJECTED = "عذراً، ما قدرت نفّذ طلبك بالشكل الصحيح. فيك تكتبه بطريقة أوضح؟"
+MAX_TOOL_CORRECTIONS = 2  # provider-side rejections (tool_use_failed) the model may fix in one turn
+_REJECTED_TOOL = re.compile(r"for tool (\w+)")
+_REJECTION_PREFIX = re.compile(r"^(?:tool_use_failed:\s*)?(?:tool call validation failed:\s*)+", re.IGNORECASE)
+
+
+def _rejection(error: LLMToolValidationError) -> tuple[str, str]:
+    """(tool name or 'unknown', short reason) from Groq's tool_use_failed message."""
+    text = str(error)
+    match = _REJECTED_TOOL.search(text)
+    return (match.group(1) if match else "unknown"), _REJECTION_PREFIX.sub("", text).strip()[:300]
 
 
 @dataclass
@@ -42,7 +54,7 @@ class StepRecord:
 @dataclass
 class TurnResult:
     reply: str
-    ended_by: str  # reply, clarification, step_limit, llm_error
+    ended_by: str  # reply, clarification, step_limit, llm_error, tool_rejected
     steps: list[StepRecord] = field(default_factory=list)
     pending_action: dict | None = None
     alerts: list[dict] = field(default_factory=list)
@@ -57,7 +69,7 @@ class TurnResult:
 def _summary(steps: list[StepRecord]) -> str:
     parts = []
     for s in steps:
-        if s.tool == "add_expense" and s.status == "ok":
+        if s.tool == "add_expense" and s.status == "ok" and "data" in s.result:
             parts.append(f"add_expense → #{s.result['data']['expense']['id']}")
         else:
             parts.append(f"{s.tool} → {s.status}")
@@ -90,6 +102,7 @@ def run_turn(
     ]
     turn = TurnResult(reply="", ended_by="", message_id=user_row.id)
     tool_texts: list[str] = []
+    corrections = 0
 
     for step in range(1, max_steps + 1):
         turn.llm_steps = step
@@ -108,6 +121,23 @@ def run_turn(
 
         try:
             response = client.chat(model, messages, TOOL_SCHEMAS, on_attempt=record)
+        except LLMToolValidationError as exc:
+            # Not a connection failure: the model's call broke the schema. It goes back to the model (§6.2).
+            tool, reason = _rejection(exc)
+            result = {"ok": False, "error": {"code": "invalid_args", "message": reason}}
+            session.add(ToolLog(
+                message_id=ctx.message_id, family_id=ctx.family_id, member_id=ctx.member_id, step=step,
+                tool_name=tool[:50], arguments={"rejected_by_provider": reason}, result=result,
+                status="invalid_args", model=model,
+            ))
+            turn.steps.append(StepRecord(step, tool, {"rejected_by_provider": reason}, "invalid_args", 0, result))
+            if corrections >= MAX_TOOL_CORRECTIONS:
+                turn.reply, turn.ended_by, turn.error = REPLY_TOOL_REJECTED, "tool_rejected", f"{exc.kind}: {reason}"
+                break
+            corrections += 1
+            messages.append({"role": "user", "content": f"Your last tool call was rejected: {reason}. "
+                                                        "Fix the arguments or omit optional ones."})
+            continue
         except LLMError as exc:
             turn.reply, turn.ended_by, turn.error = REPLY_LLM_ERROR, "llm_error", f"{exc.kind}: {exc}"
             break

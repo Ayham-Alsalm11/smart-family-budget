@@ -4,7 +4,8 @@ import httpx
 import pytest
 
 from app.llm.client import (
-    GroqClient, LLMRateLimitError, LLMRequestError, LLMServerError, LLMTimeoutError, RateLimiter, parse_duration,
+    GroqClient, LLMRateLimitError, LLMRequestError, LLMServerError, LLMTimeoutError, LLMToolValidationError,
+    RateLimiter, parse_duration,
 )
 
 TOOL_CALL = {"id": "c1", "type": "function",
@@ -105,6 +106,15 @@ def test_400_is_not_retried():
     with pytest.raises(LLMRequestError, match="model_not_found"):
         chat(client)
     assert len(sent) == 1 and clock.sleeps == []
+
+
+def test_tool_use_failed_is_classified_and_not_retried():
+    body = {"error": {"code": "tool_use_failed", "message": "Tool call validation failed: bad enum"}}
+    client, sent, _ = make([httpx.Response(400, json=body)])
+    attempts = []
+    with pytest.raises(LLMToolValidationError):
+        chat(client, attempts)
+    assert len(sent) == 1 and attempts[0].status == "tool_use_failed"
 
 
 def test_long_retry_after_stops_at_once():

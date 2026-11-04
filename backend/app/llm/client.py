@@ -55,6 +55,12 @@ class LLMRequestError(LLMError):
     kind = "request_error"
 
 
+class LLMToolValidationError(LLMRequestError):
+    """Groq's 400 `tool_use_failed`: the model's tool call did not match the schema. The loop lets the model fix it."""
+
+    kind = "tool_use_failed"
+
+
 class LLMResponseError(LLMError):
     """HTTP 200 with a body that cannot be read."""
 
@@ -288,6 +294,13 @@ def _json_mode_message(message: dict) -> tuple[str | None, list[ToolCall], dict]
 
 # ---------- client ----------
 
+def _error_code(response: httpx.Response) -> str | None:
+    try:
+        return (response.json().get("error") or {}).get("code")
+    except ValueError:
+        return None
+
+
 def _error_text(response: httpx.Response) -> str:
     try:
         error = response.json().get("error") or {}
@@ -412,6 +425,8 @@ class GroqClient:
                     wait = parse_duration(response.headers.get("retry-after"))
                 elif response.status_code >= 500:
                     error = LLMServerError(_error_text(response), response.status_code)
+                elif _error_code(response) == "tool_use_failed":
+                    error = LLMToolValidationError(_error_text(response), response.status_code)
                 else:
                     error = LLMRequestError(_error_text(response), response.status_code)
 
