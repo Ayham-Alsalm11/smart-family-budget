@@ -40,6 +40,26 @@ DEMO_SPENDING = {
 }
 
 
+# Short Syrian descriptions (2-5 words), so that search by meaning has something to find.
+DEMO_DESCRIPTIONS = {
+    "أكل وشرب": ["خضرا من سوق الهال", "لحمة من عند اللحام", "ربطة خبز وحليب", "غدا بمطعم شاورما",
+                 "أغراض من البقالية", "فواكه للبيت", "سندويشات فلافل للعيلة"],
+    "بنزين ومواصلات": ["تعبئة بنزين للسيارة", "تكسي عالشغل", "سرفيس للجامعة", "تغيير زيت السيارة",
+                       "بنشرجي صلّح الدولاب"],
+    "فواتير": ["فاتورة الكهربا", "فاتورة المي", "اشتراك النت الشهري", "تعبئة رصيد موبايل",
+               "فاتورة الهاتف الأرضي"],
+    "صحة": ["كشفية عند دكتور الأسنان", "أدوية من الصيدلية", "تحاليل دم بالمخبر", "مراجعة دكتور الأطفال",
+            "صورة أشعة للركبة"],
+    "تعليم": ["قسط المدرسة للولاد", "كتب وقرطاسية", "دورة إنكليزي", "رسوم الجامعة"],
+    "ملابس": ["جاكيت شتوي للولد", "حذاء رياضة", "فستان للعيد", "ثياب مدرسة"],
+    "ترفيه": ["سينما مع الولاد", "قعدة بالكافيه", "رحلة عالبحر", "اشتراك بالنادي"],
+    "هدايا ومناسبات": ["هدية عرس ابن الجيران", "عيدية للولاد", "عزيمة عشا للأهل"],
+    "صيانة": ["تصليح الغسالة", "سباك صلّح الحنفية", "دهان غرفة النوم", "تصليح البراد"],
+    "متفرقات": ["أغراض منوعة للبيت", "شنطة جديدة", "حلاقة للولد", "مصروف متفرق"],
+}
+RENT_DESCRIPTION = "دفعة أجار البيت"
+
+
 class SeedError(Exception):
     pass
 
@@ -98,7 +118,7 @@ def seed_demo_family(session: Session, manager_password: str, member_password: s
 
     rent_months = [_first_of_month_back(today, back) for back in (2, 1, 0)]
     for first in rent_months:
-        add("إيجار", DEMO_RENT, first, "إيجار البيت", manager)
+        add("إيجار", DEMO_RENT, first, RENT_DESCRIPTION, manager)
 
     names = list(DEMO_SPENDING)
     weights = [DEMO_SPENDING[n][2] for n in names]
@@ -106,8 +126,7 @@ def seed_demo_family(session: Session, manager_password: str, member_password: s
         category = rng.choices(names, weights)[0]
         low, high, _weight = DEMO_SPENDING[category]
         amount = Decimal(rng.randrange(low, high + 1, 500))
-        keywords = categories[category].keywords
-        description = rng.choice(keywords) if keywords else "مصروف متفرق"
+        description = rng.choice(DEMO_DESCRIPTIONS[category])
         add(category, amount, start + timedelta(days=rng.randint(0, span_days)), description,
             rng.choice([manager, member]))
 

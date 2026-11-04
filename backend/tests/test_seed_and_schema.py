@@ -95,3 +95,15 @@ def test_seed_stops_without_passwords(tmp_path, monkeypatch, capsys):
     assert seed.main() == 1
     assert "SEED_MANAGER_PASSWORD" in capsys.readouterr().err
     assert not db_file.exists()
+
+
+def test_demo_descriptions_are_short_phrases(tmp_path):
+    assert set(seed.DEMO_DESCRIPTIONS) == set(seed.DEMO_SPENDING)
+    for phrases in seed.DEMO_DESCRIPTIONS.values():
+        assert all(2 <= len(p.split()) <= 5 for p in phrases)
+    engine, db, _ = seed_into(tmp_path, "d.db")
+    descriptions = {r.description for r in db.scalars(select(Expense))}
+    assert descriptions & set(seed.DEMO_DESCRIPTIONS["صحة"]), "health expenses have descriptive text"
+    assert len(descriptions) >= 20
+    db.close()
+    engine.dispose()
