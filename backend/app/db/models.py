@@ -24,8 +24,14 @@ ROLES = ("manager", "member")
 GOAL_STATUSES = ("active", "done", "cancelled")
 ACTION_STATUSES = ("pending", "confirmed", "cancelled", "expired")
 MESSAGE_ROLES = ("user", "assistant")
+MESSAGE_OUTCOMES = (
+    "reply", "clarification", "confirmation", "confirmed", "cancelled", "step_limit", "llm_error", "tool_rejected",
+    "confirm_error",
+)
+# `tool_log.tool_name` is free text, so the server's own confirm_action and cancel_action need no list of their own;
+# `conflict` is their status when an action has expired or already ran.
 TOOL_STATUSES = (
-    "ok", "error", "invalid_args", "forbidden", "confirmation_required", "not_found", "ungrounded",
+    "ok", "error", "invalid_args", "forbidden", "confirmation_required", "not_found", "ungrounded", "conflict",
 )
 
 Money = Numeric(14, 2)
@@ -187,6 +193,7 @@ class Message(Base):
     __tablename__ = "messages"
     __table_args__ = (
         CheckConstraint(_one_of("role", MESSAGE_ROLES), name="ck_messages_role"),
+        CheckConstraint(f"ended_by IS NULL OR {_one_of('ended_by', MESSAGE_OUTCOMES)}", name="ck_messages_ended_by"),
         Index("ix_messages_member_created", "member_id", "created_at"),
     )
 
@@ -196,6 +203,7 @@ class Message(Base):
     role: Mapped[str] = mapped_column(String(10))
     content: Mapped[str] = mapped_column(Text)
     tool_summary: Mapped[str | None] = mapped_column(Text)
+    ended_by: Mapped[str | None] = mapped_column(String(15))  # how the turn ended; assistant messages only
     created_at: Mapped[datetime] = mapped_column(UTCDateTime, default=utcnow)
 
 
