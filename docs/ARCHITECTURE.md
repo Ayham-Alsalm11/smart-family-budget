@@ -470,11 +470,11 @@ Fine-tuning · enterprise microservices (API gateway, message broker, one databa
 
 ## 13. To verify
 
-| Item | Status (review of 4 Nov) |
+| Item | Status (step 4b, 4 Nov) |
 |---|---|
-| Groq model ID for Llama 3.1 8B, and native tool calling with both models | Open: needs `GROQ_API_KEY` in `backend/.env` (step 4b) |
-| ChromaDB client and server versions | GP1's environment has `chromadb` 1.5.7 with the `chroma` server command; `backend/.venv` pins one version for both |
-| Ollama with `bge-m3` | Installed (Ollama 0.32.3), 1024-dimensional vectors; cold first request ≈ 30 s |
+| Groq model ID for Llama 3.1 8B, and native tool calling with both models | **Llama is not available.** Groq's `/models` for this project lists neither `llama-3.3-70b-versatile` (a request returns 404 `model_not_found`) nor any Llama 3.1 8B. Chosen instead: `MODEL_MAIN` = `openai/gpt-oss-120b`, `MODEL_SMALL` = `openai/gpt-oss-20b`. With "دفعت 5000 بنزين" and one `add_expense` tool, both return a native tool call with valid JSON arguments `{amount: 5000, category: "بنزين ومواصلات"}`, at the default reasoning effort and at `reasoning_effort=low`. Default → low: 120b 91 → 57 completion tokens (51 → 17 reasoning), 0.58 → 0.44 s; 20b 95 → 54 (62 → 21), 0.40 → 0.28 s; prompt 208 tokens. Rate-limit headers: 1,000 requests (daily window) and 8,000 tokens per minute per model. **To update in v1.2:** D2, §6.3, §9.4 (RQ1 70B vs 8B, RQ2 "both with Llama 3.3 70B"), and running GP1 in RQ2 with the agent's main model through a `BASELINE_LLM_MODEL` override (GP1 hard-codes the Llama ID, so it cannot call Groq unchanged) |
+| ChromaDB client and server versions | `chromadb` 1.5.7 in `backend/.venv` for client and server (`chroma run --path data\chroma --port 8001`). Heartbeat OK; `expenses` and `corrections` created with cosine distance (metadata and configuration). The server reports API version 1.0.0 |
+| Ollama with `bge-m3` | Ollama 0.32.3, 1024-dimensional vectors. Warm-up with the model unloaded: 12.2 s; next request 0.5 s. `GET /health`: database, ChromaDB and Ollama `ok` |
 | Node.js and npm | Not installed; needed before step 9 |
 | Docker | Not installed; needed before step 10 |
 | Ollama reachable from the `agent-api` container | Open (step 10) |

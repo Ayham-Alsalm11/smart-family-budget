@@ -28,8 +28,8 @@ class Settings(BaseSettings):
     chroma_port: int = 8001
     ollama_base_url: str = "http://localhost:11434"
     embedding_model: str = "bge-m3"
-    model_main: str = "llama-3.3-70b-versatile"
-    model_small: str | None = None
+    model_main: str = "openai/gpt-oss-120b"
+    model_small: str = "openai/gpt-oss-20b"
     agent_today: date | None = None
     week_start: Weekday = "saturday"
     trend_threshold: float = 0.3
