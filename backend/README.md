@@ -12,6 +12,8 @@ copy .env.example .env
 ```
 
 Fill in `backend\.env` yourself (`GROQ_API_KEY`, `JWT_SECRET`, seed passwords). Never commit or print it.
+`JWT_SECRET` needs at least 32 characters, otherwise the login paths answer 503. To generate one:
+`.venv\Scripts\python -c "import secrets; print(secrets.token_urlsafe(48))"`
 
 ## Running the three local services
 
@@ -30,7 +32,28 @@ Each in its own terminal, from `backend\`:
    ```
    .venv\Scripts\python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
    ```
-   Check: http://127.0.0.1:8000/health, Swagger: http://127.0.0.1:8000/docs
+   Check: http://127.0.0.1:8000/health, Swagger: http://127.0.0.1:8000/docs (use **Authorize** with the token).
+   Without ChromaDB or Ollama the API still runs and search by meaning answers `not_available`. Without
+   `GROQ_API_KEY`, `/chat` answers 503.
+
+## Trying the API with curl (Windows `cmd`)
+
+Register a family; the reply has an `access_token`:
+
+```
+curl -X POST http://127.0.0.1:8000/auth/register-family -H "Content-Type: application/json" -d "{\"family_name\":\"Al Salem\",\"monthly_income\":500000,\"base_currency\":\"SYP_OLD\",\"name\":\"Abu Ahmad\",\"username\":\"abu.ahmad\",\"password\":\"choose-a-long-one\"}"
+set TOKEN=paste-the-access-token-here
+```
+
+Send a message to the agent. This one spends Groq quota. `cmd` garbles Arabic on the command line, so put the
+body in a UTF-8 file `chat.json` containing `{"message": "دفعت 5000 بنزين"}`:
+
+```
+curl -X POST http://127.0.0.1:8000/chat -H "Authorization: Bearer %TOKEN%" -H "Content-Type: application/json" --data-binary @chat.json
+```
+
+Every error has the same shape: `{"error": {"code": "...", "message": "...", "fields": ["..."]}}`, and `fields` is
+present only when it applies.
 
 ## Demo data
 

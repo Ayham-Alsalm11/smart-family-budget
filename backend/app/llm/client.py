@@ -5,11 +5,14 @@
 - Never returns None (A1): after the last attempt it raises a typed `LLMError`.
 - A limiter per model keeps requests under the tokens-per-minute limit, from a rolling window
   of its own usage and the `x-ratelimit-*` headers, so that 429s are avoided rather than retried.
+- One client serves every API request: its shared state is guarded by locks, and a waiting
+  request sleeps outside them.
 - Every attempt is reported through `on_attempt`; the agent loop writes it to `llm_calls`.
 """
 import json
 import random
 import re
+import threading
 import time
 from collections import deque
 from collections.abc import Callable
@@ -168,7 +171,8 @@ class RateLimiter:
         self.observations = 0
         self._clock = clock
         self._sleep = sleep
-        self._events: deque[list] = deque()  # [timestamp, tokens], used until the first headers
+        self._lock = threading.Lock()
+        self._events: deque[list] = deque()  # [timestamp, tokens, seconds waited], used until the first headers
         self._budget: float | None = None  # free tokens at _budget_at, from the headers
         self._budget_at = 0.0
         self.waited_total = 0.0
@@ -180,39 +184,47 @@ class RateLimiter:
         if raw_estimate <= 0 or actual_tokens <= 0:
             return
         ratio = actual_tokens / raw_estimate
-        self.ratio = ratio if self.observations == 0 else (1 - self.smoothing) * self.ratio + self.smoothing * ratio
-        self.ratio = max(self.ratio, 0.1)
-        self.observations += 1
+        with self._lock:
+            self.ratio = ratio if self.observations == 0 else (1 - self.smoothing) * self.ratio + self.smoothing * ratio
+            self.ratio = max(self.ratio, 0.1)
+            self.observations += 1
 
     def _used(self, now: float) -> int:
         while self._events and self._events[0][0] + self.window <= now:
             self._events.popleft()
-        return sum(tokens for _, tokens in self._events)
+        return sum(event[1] for event in self._events)
 
     def _available(self, now: float) -> float:
         return min(self.limit, self._budget + (now - self._budget_at) * self.limit / self.window)
 
-    def acquire(self, estimate: int) -> list:
-        """Wait until `estimate` tokens fit, then reserve them. Returns the reservation for `settle`."""
+    def _delay(self, now: float, estimate: int) -> float:
+        """Seconds until `estimate` tokens fit, or 0 after reserving them from the budget."""
         needed = min(estimate, self.limit)
+        if self._budget is not None:
+            available = self._available(now)
+            if needed <= available:
+                self._budget, self._budget_at = available - needed, now
+                return 0.0
+            return max((needed - available) * self.window / self.limit, 0.05)
+        if self._used(now) + estimate <= self.limit or not self._events:
+            return 0.0
+        return max(self._events[0][0] + self.window - now, 0.05)
+
+    def acquire(self, estimate: int) -> list:
+        """Wait until `estimate` tokens fit, then reserve them. Returns the reservation for `settle`;
+        its third item is the time this request waited."""
+        waited = 0.0
         while True:
-            now = self._clock()
-            if self._budget is not None:
-                available = self._available(now)
-                if needed <= available:
-                    self._budget, self._budget_at = available - needed, now
-                    break
-                delay = (needed - available) * self.window / self.limit
-            else:
-                if self._used(now) + estimate <= self.limit or not self._events:
-                    break
-                delay = self._events[0][0] + self.window - now
-            delay = max(delay, 0.05)
+            with self._lock:
+                now = self._clock()
+                delay = self._delay(now, estimate)
+                if not delay:
+                    event = [now, estimate, waited]
+                    self._events.append(event)
+                    return event
+                self.waited_total += delay
             self._sleep(delay)
-            self.waited_total += delay
-        event = [self._clock(), estimate]
-        self._events.append(event)
-        return event
+            waited += delay
 
     @staticmethod
     def settle(event: list, tokens: int) -> None:
@@ -221,11 +233,12 @@ class RateLimiter:
 
     def update(self, headers: httpx.Headers | dict) -> None:
         limit = headers.get("x-ratelimit-limit-tokens")
-        if limit and limit.isdigit():
-            self.limit = int(limit)
         remaining = headers.get("x-ratelimit-remaining-tokens")
-        if remaining is not None and remaining.lstrip("-").isdigit():
-            self._budget, self._budget_at = float(remaining), self._clock()
+        with self._lock:
+            if limit and limit.isdigit():
+                self.limit = int(limit)
+            if remaining is not None and remaining.lstrip("-").isdigit():
+                self._budget, self._budget_at = float(remaining), self._clock()
 
 
 def estimate_tokens(payload: dict) -> int:
@@ -366,6 +379,7 @@ class GroqClient:
         self._jitter = jitter
         self._http = httpx.Client(base_url=base_url, timeout=timeout, transport=transport,
                                   headers={"Authorization": f"Bearer {api_key}"})
+        self._limiters_lock = threading.Lock()
         self.limiters: dict[str, RateLimiter] = {}
         self.last_rate_limits: dict[str, dict[str, str]] = {}
 
@@ -378,9 +392,10 @@ class GroqClient:
         return cls(settings.groq_api_key.get_secret_value(), **options)
 
     def limiter(self, model: str) -> RateLimiter:
-        if model not in self.limiters:
-            self.limiters[model] = RateLimiter(self.tokens_per_minute, clock=self._clock, sleep=self._sleep)
-        return self.limiters[model]
+        with self._limiters_lock:
+            if model not in self.limiters:
+                self.limiters[model] = RateLimiter(self.tokens_per_minute, clock=self._clock, sleep=self._sleep)
+            return self.limiters[model]
 
     def _payload(self, model: str, messages: list[dict], tools: list[dict], temperature: float,
                  reasoning_effort: str | None) -> dict:
@@ -418,9 +433,8 @@ class GroqClient:
         rate_limit_retries = 0
 
         for attempt in range(1, self.max_retries + 2):
-            waited_before = limiter.waited_total
             reservation = limiter.acquire(estimate)
-            waited_ms = int((limiter.waited_total - waited_before) * 1000)
+            waited_ms = int(reservation[2] * 1000)
             started = self._clock()
             response: httpx.Response | None = None
             wait: float | None = None
