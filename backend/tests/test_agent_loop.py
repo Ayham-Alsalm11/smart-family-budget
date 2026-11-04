@@ -105,9 +105,10 @@ def test_ungrounded_number_is_logged(session, member_ctx):
     turn, _ = run(session, member_ctx, "كم صرفت؟", [
         respond(call("get_total", period="this_month")),
         respond(content="صرفت 5,000 ليرة، يعني تقريباً ١٢٬٣٤٥ بالأسبوع."),
+        respond(content="صرفت 5,000 ليرة، يعني تقريباً ١٢٬٣٤٥ بالأسبوع."),
     ])
     assert turn.ungrounded == ["12345"]
-    log = session.scalars(select(ToolLog).where(ToolLog.status == "ungrounded")).one()
+    log = session.scalars(select(ToolLog).where(ToolLog.tool_name == "grounding")).one()
     assert (log.tool_name, log.arguments) == ("grounding", {"numbers": ["12345"]})
 
 

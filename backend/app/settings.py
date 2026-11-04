@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     week_start: Weekday = "saturday"
     trend_threshold: float = 0.3
     corrections_enabled: bool = False
+    grounding_repair: bool = True  # one repair attempt when a reply has ungrounded numbers (§6.9)
     seed_manager_password: SecretStr | None = None
     seed_member_password: SecretStr | None = None
 

@@ -244,7 +244,7 @@ def test_chat_survives_a_model_failure(api, llm):
 
 def test_one_client_serves_all_requests(api, llm):
     first, second = register(api, "sami"), register(api, "omar")
-    llm.responses = [respond(content="1"), respond(content="2")]
+    llm.responses = [respond(content="أهلا"), respond(content="مرحبا")]
     api.post("/chat", json={"message": "مرحبا"}, headers=first.headers)
     api.post("/chat", json={"message": "مرحبا"}, headers=second.headers)
     assert api.app.state.llm is llm and len(llm.requests) == 2

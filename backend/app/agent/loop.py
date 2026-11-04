@@ -32,6 +32,8 @@ MAX_TOOL_CORRECTIONS = 2  # provider-side rejections (tool_use_failed) the model
 _REJECTED_TOOL = re.compile(r"for tool (\w+)")
 _REJECTION_PREFIX = re.compile(r"^(?:tool_use_failed:\s*)?(?:tool call validation failed:\s*)+", re.IGNORECASE)
 SUMMARY_MAX_IDS = 5
+REPAIR_REQUEST = ("Your reply has numbers that are not in the tool results: {numbers}. Rewrite it using only numbers "
+                  "from the tool results, or call a tool to get them. If a number is not available, leave it out.")
 
 
 @dataclass(frozen=True)
@@ -39,10 +41,12 @@ class TurnOptions:
     memory_messages: int = 10
     memory_hours: int = 24
     memory_max_tokens: int = 600
+    grounding_repair: bool = True
 
     @classmethod
     def from_settings(cls, settings: Any) -> "TurnOptions":
-        return cls(settings.memory_messages, settings.memory_hours, settings.memory_max_tokens)
+        return cls(settings.memory_messages, settings.memory_hours, settings.memory_max_tokens,
+                   settings.grounding_repair)
 
 
 def _rejection(error: LLMToolValidationError) -> tuple[str, str]:
@@ -76,9 +80,16 @@ class TurnResult:
     usage: Usage = field(default_factory=Usage)
     llm_calls: list[dict] = field(default_factory=list)
     llm_steps: int = 0
-    ungrounded: list[str] = field(default_factory=list)
+    ungrounded: list[str] = field(default_factory=list)  # in the final reply
+    repaired: bool = False  # a repair was attempted (§6.9)
+    first_reply: str | None = None  # the reply before the repair
+    first_ungrounded: list[str] = field(default_factory=list)
     message_id: int | None = None
     error: str | None = None
+
+
+def _ungrounded(reply: str, tool_texts: list[str], message: str) -> list[str]:
+    return [str(number) for number in ungrounded_numbers(reply, tool_texts, message)]
 
 
 def _expense_ids(step: StepRecord) -> list[int]:
@@ -196,6 +207,12 @@ def run_turn(
 
         if not response.tool_calls:
             turn.reply = (response.content or "").strip() or REPLY_EMPTY
+            flagged = _ungrounded(turn.reply, tool_texts, message)
+            if flagged and options.grounding_repair and not turn.repaired and step < max_steps:
+                turn.repaired, turn.first_reply, turn.first_ungrounded = True, turn.reply, flagged
+                messages.append(response.assistant_message)
+                messages.append({"role": "user", "content": REPAIR_REQUEST.format(numbers=", ".join(flagged))})
+                continue
             turn.ended_by = "reply"
             break
 
@@ -232,8 +249,18 @@ def run_turn(
     else:
         turn.reply, turn.ended_by = REPLY_STEP_LIMIT, "step_limit"
 
+    if turn.repaired and turn.ended_by in ("step_limit", "llm_error", "tool_rejected"):
+        # The turn's work is done and only the repair failed: the first reply is better than an apology.
+        turn.reply, turn.ended_by, turn.error = turn.first_reply, "reply", None
     if turn.ended_by == "reply":
-        turn.ungrounded = [str(n) for n in ungrounded_numbers(turn.reply, tool_texts)]
+        turn.ungrounded = _ungrounded(turn.reply, tool_texts, message)
+        if turn.repaired:
+            session.add(ToolLog(
+                message_id=ctx.message_id, family_id=ctx.family_id, member_id=ctx.member_id, step=turn.llm_steps,
+                tool_name="grounding_repair", result=None, status="ungrounded" if turn.ungrounded else "ok", model=model,
+                arguments={"first_reply": turn.first_reply, "first_ungrounded": turn.first_ungrounded,
+                           "ungrounded_after": turn.ungrounded},
+            ))
         if turn.ungrounded:
             session.add(ToolLog(
                 message_id=ctx.message_id, family_id=ctx.family_id, member_id=ctx.member_id, step=turn.llm_steps,

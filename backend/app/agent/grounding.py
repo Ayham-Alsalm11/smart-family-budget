@@ -10,6 +10,7 @@ Reply side:
   object, within ±0.1 (or the shown precision).
 - A year (2000–2100) is accepted only if a date in the results has it, so a wrong year is still caught.
 Tool side: every number in the results, the parts of every date, and ratios inside each object.
+The user's current message also counts: repeating a number they said is not inventing one.
 """
 import json
 import re
@@ -119,8 +120,12 @@ def _close(number: ShownNumber, candidates: set[Decimal], tolerance: Decimal) ->
     return any(abs(abs(number.value) - abs(c)) <= tolerance for c in candidates)
 
 
-def ungrounded_numbers(reply: str, tool_results: list[str]) -> list[Decimal]:
+def ungrounded_numbers(reply: str, tool_results: list[str], user_message: str = "") -> list[Decimal]:
     evidence = collect_evidence(tool_results)
+    for number in shown_numbers(user_message):
+        (evidence.percents if number.percent else evidence.values).add(number.value)
+        if number.is_year:
+            evidence.years.add(int(number.value))
     flagged = set()
     for number in shown_numbers(reply):
         half_step = number.step / 2
