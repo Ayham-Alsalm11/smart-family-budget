@@ -37,6 +37,25 @@ def test_total_filters(session, manager_ctx, member_ctx, member):
         reports.get_total(session, manager_ctx, period=None)
 
 
+@pytest.mark.parametrize("asked", ["بابا", "manager1", "nobody", 999])
+def test_member_filter_is_refused_before_any_lookup(session, member_ctx, asked, monkeypatch):
+    """A member gets forbidden for any other name, existing or not, so names in the family are not revealed."""
+    from app.services import expenses as service
+    looked_up = []
+    original = service.select
+    monkeypatch.setattr(service, "select", lambda *a, **k: looked_up.append(a) or original(*a, **k))
+    with pytest.raises(ForbiddenError):
+        reports.get_total(session, member_ctx, period="this_month", member=asked)
+    assert looked_up == [], "no member query was run"
+
+
+@pytest.mark.parametrize("own", ["me", "member1"])
+def test_member_may_filter_on_themselves(session, member_ctx, member, own):
+    add(session, member_ctx, 700)
+    assert reports.get_total(session, member_ctx, period="this_month", member=own)["member_id"] == member.id
+    assert reports.get_total(session, member_ctx, period="this_month", member=member.id)["total"] == D("700.00")
+
+
 def test_breakdown_by_category(session, member_ctx):
     add(session, member_ctx, 3000)
     add(session, member_ctx, 1000, category="فواتير")

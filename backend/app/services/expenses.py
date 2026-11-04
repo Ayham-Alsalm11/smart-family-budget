@@ -57,10 +57,17 @@ def get_category(session: Session, name: str | None) -> Category:
 def resolve_member_filter(session: Session, ctx: ToolContext, member: int | str | None) -> int | None:
     """None → no filter; "me" → the caller; an id, username or name → that member of the family.
 
-    Members may only filter on themselves (§5: totals by member are manager-only).
+    Members may only filter on themselves (§5: totals by member are manager-only). Anything else is refused
+    before any lookup, so a member cannot even learn whether a name exists in the family.
     """
     if member is None or member == "":
         return None
+    if not ctx.is_manager:
+        me = session.get(Member, ctx.member_id)
+        own = {"me", str(ctx.member_id)} | ({me.name, me.username} if me else set())
+        if isinstance(member, bool) or str(member) not in own:
+            raise ForbiddenError("only the family manager can see other members' expenses")
+        return ctx.member_id
     if member == "me":
         member_id = ctx.member_id
     else:
@@ -76,8 +83,6 @@ def resolve_member_filter(session: Session, ctx: ToolContext, member: int | str 
         if len(ids) > 1:
             raise ValidationError(f"member {member!r} is ambiguous")
         member_id = ids[0]
-    if not ctx.is_manager and member_id != ctx.member_id:
-        raise ForbiddenError("members can only see their own expenses")
     return member_id
 
 
