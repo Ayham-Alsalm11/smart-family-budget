@@ -1,11 +1,14 @@
 import json
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import pytest
 
 from app.llm.client import (
     GroqClient, LLMRateLimitError, LLMRequestError, LLMServerError, LLMTimeoutError, LLMToolValidationError,
-    RateLimiter, estimate_tokens, parse_duration,
+    RateLimiter, Usage, estimate_tokens, parse_duration,
 )
 
 TOOL_CALL = {"id": "c1", "type": "function",
@@ -68,6 +71,22 @@ def test_success_payload_and_parsing():
     assert (result.usage.prompt_tokens, result.usage.completion_tokens, result.usage.reasoning_tokens) == (200, 50, 20)
     assert [(a.status, a.http_status) for a in attempts] == [("ok", 200)]
     assert result.assistant_message["tool_calls"][0]["id"] == "c1"
+
+
+def test_cached_tokens_are_read_and_added_up():
+    body = {"choices": [{"message": {"role": "assistant", "content": "ok"}}],
+            "usage": {**USAGE, "prompt_tokens_details": {"cached_tokens": 150}}}
+    client, _, _ = make([httpx.Response(200, json=body), ok()])
+    first, second = chat(client), chat(client)
+    assert first.usage.cached_tokens == 150
+    assert second.usage.cached_tokens == 0, "zero when Groq does not report it"
+    assert (first.usage + first.usage).cached_tokens == 300
+    assert first.usage.as_dict()["cached"] == 150 and first.usage.total_tokens == 250, "part of the prompt, not extra"
+
+
+@pytest.mark.parametrize("usage", [{"prompt_tokens_details": None}, {"prompt_tokens_details": {}}, {}, None])
+def test_cached_tokens_missing_from_the_response(usage):
+    assert Usage.from_api(usage).cached_tokens == 0
 
 
 def test_429_waits_for_retry_after():
@@ -169,6 +188,66 @@ def test_limiter_waits_only_for_the_missing_part():
     clock.now += 30
     limiter.acquire(4000)
     assert clock.sleeps == [7.5], "30 s refilled 4,000 tokens"
+
+
+def test_parallel_requests_share_the_budget_without_overspending():
+    """Twenty threads through one limiter: the budget never goes below zero."""
+    clock = FakeClock()
+    limiter = RateLimiter(6000, clock=clock, sleep=clock.sleep)
+    limiter.update({"x-ratelimit-limit-tokens": "6000", "x-ratelimit-remaining-tokens": "4000"})
+    start = threading.Barrier(20)
+
+    def take(_):
+        start.wait()
+        return limiter.acquire(500)
+
+    with ThreadPoolExecutor(20) as pool:
+        events = list(pool.map(take, range(20)))
+    assert sum(e[1] for e in events) == 10000 and limiter._budget >= 0
+    assert sum(1 for e in events if e[2] == 0) >= 8, "4,000 tokens let at least eight through at once"
+    assert limiter.waited_total > 0, "the requests past the budget had to wait"
+
+
+def test_a_waiting_request_does_not_block_the_others():
+    """The sleep happens outside the lock, so that a response can still update the limiter."""
+    released = threading.Event()
+    sleeping = threading.Event()
+
+    def sleep(_seconds):
+        sleeping.set()
+        assert released.wait(5)
+
+    limiter = RateLimiter(6000, sleep=sleep)
+    limiter.update({"x-ratelimit-limit-tokens": "6000", "x-ratelimit-remaining-tokens": "0"})
+    waiting = threading.Thread(target=limiter.acquire, args=(5000,))
+    waiting.start()
+    assert sleeping.wait(5)
+    limiter.update({"x-ratelimit-remaining-tokens": "6000"})
+    limiter.observe(100, 100)
+    released.set()
+    waiting.join(5)
+    assert not waiting.is_alive()
+
+
+def test_each_request_reports_its_own_wait():
+    clock = FakeClock()
+    limiter = RateLimiter(6000, clock=clock, sleep=clock.sleep)
+    limiter.update({"x-ratelimit-limit-tokens": "6000", "x-ratelimit-remaining-tokens": "0"})
+    assert limiter.acquire(1000)[2] == pytest.approx(10.0)
+    clock.now += 60
+    assert limiter.acquire(1000)[2] == 0
+
+
+def test_all_threads_get_the_same_limiter():
+    client, _, _ = make([])
+    start = threading.Barrier(16)
+
+    def get(_):
+        start.wait()
+        return client.limiter("openai/gpt-oss-20b")
+
+    with ThreadPoolExecutor(16) as pool:
+        assert len({id(limiter) for limiter in pool.map(get, range(16))}) == 1
 
 
 def test_simulated_groq_bucket_no_429_and_little_waiting():

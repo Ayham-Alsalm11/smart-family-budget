@@ -77,6 +77,7 @@ class Usage:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     reasoning_tokens: int = 0
+    cached_tokens: int = 0  # part of prompt_tokens: read from Groq's prompt cache
 
     @property
     def total_tokens(self) -> int:
@@ -84,18 +85,19 @@ class Usage:
 
     def __add__(self, other: "Usage") -> "Usage":
         return Usage(self.prompt_tokens + other.prompt_tokens, self.completion_tokens + other.completion_tokens,
-                     self.reasoning_tokens + other.reasoning_tokens)
+                     self.reasoning_tokens + other.reasoning_tokens, self.cached_tokens + other.cached_tokens)
 
     @classmethod
     def from_api(cls, usage: dict | None) -> "Usage":
         usage = usage or {}
-        details = usage.get("completion_tokens_details") or {}
+        completion = usage.get("completion_tokens_details") or {}
+        prompt = usage.get("prompt_tokens_details") or {}
         return cls(usage.get("prompt_tokens") or 0, usage.get("completion_tokens") or 0,
-                   details.get("reasoning_tokens") or 0)
+                   completion.get("reasoning_tokens") or 0, prompt.get("cached_tokens") or 0)
 
     def as_dict(self) -> dict:
         return {"prompt": self.prompt_tokens, "completion": self.completion_tokens,
-                "reasoning": self.reasoning_tokens, "total": self.total_tokens}
+                "reasoning": self.reasoning_tokens, "cached": self.cached_tokens, "total": self.total_tokens}
 
 
 @dataclass

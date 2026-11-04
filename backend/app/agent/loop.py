@@ -113,7 +113,7 @@ def run_turn(
                 message_id=ctx.message_id, model=attempt.model, step=step, attempt=attempt.attempt,
                 status=attempt.status, http_status=attempt.http_status, latency_ms=attempt.latency_ms,
                 prompt_tokens=usage.prompt_tokens, completion_tokens=usage.completion_tokens,
-                reasoning_tokens=usage.reasoning_tokens, error=attempt.error,
+                reasoning_tokens=usage.reasoning_tokens, cached_tokens=usage.cached_tokens, error=attempt.error,
             ))
             turn.llm_calls.append({"step": step, "attempt": attempt.attempt, "status": attempt.status,
                                    "http_status": attempt.http_status, "latency_ms": attempt.latency_ms,
