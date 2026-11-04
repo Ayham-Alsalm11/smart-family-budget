@@ -148,35 +148,63 @@ def parse_duration(value: str | None) -> float | None:
 
 
 class RateLimiter:
-    """Keeps one model under its tokens-per-minute limit."""
+    """Keeps one model under its tokens-per-minute limit, with as little waiting as possible.
+
+    - After each response, `x-ratelimit-remaining-tokens` gives the free budget; Groq refills it
+      continuously at about limit/60 tokens a second, so a request waits only for the missing part.
+    - Before any header is seen, a rolling 60 s window of the limiter's own usage is used.
+    - Estimates are calibrated per model: a moving average of actual ÷ estimated tokens, plus a small
+      safety margin (the raw estimate overshot by about 1.7× in step 5a).
+    """
 
     def __init__(self, tokens_per_minute: int = 8000, window: float = 60.0,
-                 clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep) -> None:
+                 clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep,
+                 margin: float = 0.1, smoothing: float = 0.3) -> None:
         self.limit = tokens_per_minute
         self.window = window
+        self.margin = margin
+        self.smoothing = smoothing
+        self.ratio = 1.0  # moving average of actual / raw estimate
+        self.observations = 0
         self._clock = clock
         self._sleep = sleep
-        self._events: deque[list] = deque()  # [timestamp, tokens]
-        self._remaining: int | None = None
-        self._reset_at: float | None = None
+        self._events: deque[list] = deque()  # [timestamp, tokens], used until the first headers
+        self._budget: float | None = None  # free tokens at _budget_at, from the headers
+        self._budget_at = 0.0
         self.waited_total = 0.0
+
+    def calibrate(self, raw_estimate: int) -> int:
+        return int(raw_estimate * self.ratio * (1 + self.margin)) + 1
+
+    def observe(self, raw_estimate: int, actual_tokens: int) -> None:
+        if raw_estimate <= 0 or actual_tokens <= 0:
+            return
+        ratio = actual_tokens / raw_estimate
+        self.ratio = ratio if self.observations == 0 else (1 - self.smoothing) * self.ratio + self.smoothing * ratio
+        self.ratio = max(self.ratio, 0.1)
+        self.observations += 1
 
     def _used(self, now: float) -> int:
         while self._events and self._events[0][0] + self.window <= now:
             self._events.popleft()
         return sum(tokens for _, tokens in self._events)
 
+    def _available(self, now: float) -> float:
+        return min(self.limit, self._budget + (now - self._budget_at) * self.limit / self.window)
+
     def acquire(self, estimate: int) -> list:
         """Wait until `estimate` tokens fit, then reserve them. Returns the reservation for `settle`."""
+        needed = min(estimate, self.limit)
         while True:
             now = self._clock()
-            if self._reset_at is not None and now >= self._reset_at:
-                self._remaining = self._reset_at = None
-            if self._remaining is not None and estimate > self._remaining:
-                delay = self._reset_at - now
+            if self._budget is not None:
+                available = self._available(now)
+                if needed <= available:
+                    self._budget, self._budget_at = available - needed, now
+                    break
+                delay = (needed - available) * self.window / self.limit
             else:
-                used = self._used(now)
-                if used + estimate <= self.limit or not self._events:
+                if self._used(now) + estimate <= self.limit or not self._events:
                     break
                 delay = self._events[0][0] + self.window - now
             delay = max(delay, 0.05)
@@ -184,8 +212,6 @@ class RateLimiter:
             self.waited_total += delay
         event = [self._clock(), estimate]
         self._events.append(event)
-        if self._remaining is not None:
-            self._remaining -= estimate
         return event
 
     @staticmethod
@@ -198,10 +224,8 @@ class RateLimiter:
         if limit and limit.isdigit():
             self.limit = int(limit)
         remaining = headers.get("x-ratelimit-remaining-tokens")
-        reset = parse_duration(headers.get("x-ratelimit-reset-tokens"))
-        if remaining is not None and remaining.lstrip("-").isdigit() and reset is not None:
-            self._remaining = int(remaining)
-            self._reset_at = self._clock() + reset
+        if remaining is not None and remaining.lstrip("-").isdigit():
+            self._budget, self._budget_at = float(remaining), self._clock()
 
 
 def estimate_tokens(payload: dict) -> int:
@@ -388,8 +412,9 @@ class GroqClient:
     ) -> LLMResponse:
         effort = self.reasoning_effort if reasoning_effort is _UNSET else reasoning_effort
         payload = self._payload(model, messages, tools or [], temperature, effort)
-        estimate = estimate_tokens(payload)
         limiter = self.limiter(model)
+        raw_estimate = estimate_tokens(payload)
+        estimate = limiter.calibrate(raw_estimate)
         rate_limit_retries = 0
 
         for attempt in range(1, self.max_retries + 2):
@@ -416,6 +441,7 @@ class GroqClient:
                         error = LLMResponseError(f"unreadable response: {exc}", 200)
                     else:
                         limiter.settle(reservation, result.usage.total_tokens)
+                        limiter.observe(raw_estimate, result.usage.total_tokens)
                         if on_attempt:
                             on_attempt(Attempt(model, attempt, "ok", 200, result.latency_ms, result.usage,
                                                waited_ms=waited_ms))

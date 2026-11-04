@@ -5,7 +5,7 @@ import pytest
 
 from app.llm.client import (
     GroqClient, LLMRateLimitError, LLMRequestError, LLMServerError, LLMTimeoutError, LLMToolValidationError,
-    RateLimiter, parse_duration,
+    RateLimiter, estimate_tokens, parse_duration,
 )
 
 TOOL_CALL = {"id": "c1", "type": "function",
@@ -145,18 +145,59 @@ def test_rate_limit_headers_are_kept_and_respected():
     client, _, clock = make([ok(headers=headers), ok()])
     chat(client)
     assert client.last_rate_limits["openai/gpt-oss-20b"]["x-ratelimit-remaining-requests"] == "998"
+    limiter = client.limiter("openai/gpt-oss-20b")
+    expected = limiter.calibrate(estimate_tokens({"messages": MESSAGES, "tools": TOOLS})) * 60 / 8000
     chat(client)
-    assert clock.sleeps == [5.0], "the second request waits for the token window to reset"
+    assert clock.sleeps == [pytest.approx(expected, abs=0.01)], "waits only for the missing tokens to refill"
 
 
-def test_limiter_rolling_window():
+def test_limiter_calibrates_on_actual_usage():
+    limiter = RateLimiter(8000)
+    assert limiter.calibrate(3000) == 3301, "uncalibrated: raw estimate plus the 10 % margin"
+    limiter.observe(3000, 1650)
+    assert limiter.calibrate(3000) == int(3000 * 0.55 * 1.1) + 1
+    limiter.observe(3000, 1800)
+    assert limiter.ratio == pytest.approx(0.7 * 0.55 + 0.3 * 0.6)
+
+
+def test_limiter_waits_only_for_the_missing_part():
     clock = FakeClock()
-    limiter = RateLimiter(1000, clock=clock, sleep=clock.sleep)
-    first = limiter.acquire(600)
-    limiter.settle(first, 700)
-    clock.now += 10
-    limiter.acquire(400)
-    assert clock.sleeps == [50.0], "waits until the first request leaves the 60 s window"
+    limiter = RateLimiter(8000, clock=clock, sleep=clock.sleep)
+    limiter.update({"x-ratelimit-limit-tokens": "8000", "x-ratelimit-remaining-tokens": "1000"})
+    limiter.acquire(2000)
+    assert clock.sleeps == [7.5], "1,000 missing tokens at 8,000 a minute"
+    clock.now += 30
+    limiter.acquire(4000)
+    assert clock.sleeps == [7.5], "30 s refilled 4,000 tokens"
+
+
+def test_simulated_groq_bucket_no_429_and_little_waiting():
+    """A fake server with Groq's continuous refill: 20 calls of 1,650 real tokens, estimated at about 3,000."""
+    clock = FakeClock()
+    state = {"bucket": 8000.0, "at": clock.now, "rejected": 0}
+    actual = 1650
+
+    def handler(request):
+        state["bucket"] = min(8000.0, state["bucket"] + (clock.now - state["at"]) * 8000 / 60)
+        state["at"] = clock.now
+        if state["bucket"] < actual:
+            state["rejected"] += 1
+            return httpx.Response(429, headers={"retry-after": "5"})
+        state["bucket"] -= actual
+        body = {"choices": [{"message": {"role": "assistant", "content": "تمام"}}],
+                "usage": {"prompt_tokens": actual - 50, "completion_tokens": 50}}
+        return httpx.Response(200, json=body, headers={"x-ratelimit-limit-tokens": "8000",
+                                                       "x-ratelimit-remaining-tokens": str(int(state["bucket"]))})
+
+    client = GroqClient("k", transport=httpx.MockTransport(handler), clock=clock, sleep=clock.sleep,
+                        jitter=lambda: 0.0, max_rate_limit_retries=0)
+    messages = [{"role": "system", "content": "x" * 8100}, {"role": "user", "content": "مرحبا"}]
+    assert estimate_tokens({"messages": messages}) > 2900
+    for _ in range(20):
+        client.chat("m", messages)
+    assert state["rejected"] == 0
+    minimum = (20 * actual - 8000) * 60 / 8000  # seconds the bucket needs to refill, whatever the client does
+    assert minimum <= sum(clock.sleeps) <= minimum * 1.2
 
 
 def test_json_fallback_mode():
