@@ -1,0 +1,108 @@
+{
+  "_note": "Development scenarios for step 6. NOT evaluation data: they must stay out of data/eval/. Run with scripts/run_scenarios.py. In `expect`, a list value means any of these, and $name is the id of the setup expense with that ref.",
+  "scenarios": [
+    {
+      "id": "S1", "who": "manager", "setup": [],
+      "turns": [
+        {"text": "دفعت 50 لأبو أحمد", "expect": {"ended_by": "clarification", "no_tools": ["add_expense"]}},
+        {"text": "كانت حق خضرا", "expect": {"ended_by": "reply",
+          "tools": [{"tool": "add_expense", "status": "ok", "args": {"amount": 50, "category": "أكل وشرب"}}],
+          "source_text": "دفعت 50 لأبو أحمد ← كانت حق خضرا"}}
+      ]
+    },
+    {
+      "id": "S2", "who": "manager", "setup": [],
+      "turns": [
+        {"text": "اشتريت دوا للولد", "expect": {"ended_by": "clarification", "no_tools": ["add_expense"]}},
+        {"text": "سبع تلاف", "expect": {"ended_by": "reply",
+          "tools": [{"tool": "add_expense", "status": "ok", "args": {"amount": 7000, "category": "صحة"}}],
+          "source_text": "اشتريت دوا للولد ← سبع تلاف"}}
+      ]
+    },
+    {
+      "id": "S3", "who": "manager",
+      "setup": [{"ref": "bill", "amount": 15000, "category": "فواتير", "description": "فاتورة كهربا الشهر", "days_ago": 0}],
+      "turns": [
+        {"text": "امسح فاتورة الكهربا", "expect": {"ended_by": "confirmation",
+          "tools": [{"tool": "delete_expense", "status": "confirmation_required", "args": {"expense_id": "$bill"}}],
+          "reply_has": ["15,000", "ليرة قديمة", "«اي»"], "expense": {"ref": "bill", "exists": true}}},
+        {"text": "اي", "expect": {"ended_by": "confirmed", "llm_calls": 0, "reply_has": ["تم ✅"],
+          "expense": {"ref": "bill", "exists": false}}}
+      ]
+    },
+    {
+      "id": "S4", "who": "manager",
+      "setup": [{"ref": "fuel", "amount": 5000, "category": "بنزين ومواصلات", "description": "تعبئة بنزين", "days_ago": 0}],
+      "turns": [
+        {"text": "خلي مصروف البنزين 6000", "expect": {"ended_by": "confirmation",
+          "tools": [{"tool": "edit_expense", "status": "confirmation_required", "args": {"expense_id": "$fuel", "changes": {"amount": 6000}}}],
+          "reply_has": ["قبل: 5,000", "بعد: 6,000"]}},
+        {"text": "لا خليه", "expect": {"ended_by": "cancelled", "llm_calls": 0,
+          "expense": {"ref": "fuel", "exists": true, "amount": 5000}}}
+      ]
+    },
+    {
+      "id": "S5", "who": "manager",
+      "setup": [
+        {"ref": "first", "amount": 2000, "category": "أكل وشرب", "description": "ربطة خبز", "days_ago": 0},
+        {"ref": "second", "amount": 4000, "category": "بنزين ومواصلات", "description": "تكسي عالشغل", "days_ago": 0}
+      ],
+      "turns": [
+        {"text": "امسح آخر مصروف", "expect": {"ended_by": "confirmation",
+          "tools": [{"tool": "delete_expense", "status": "confirmation_required", "args": {"expense_id": "$second"}}]}},
+        {"text": "كم صرفنا اليوم؟", "expect": {"ended_by": "reply",
+          "tools": [{"tool": "get_total", "status": "ok", "args": {"period": "today"}}],
+          "no_tools": ["delete_expense", "edit_expense"], "expense": {"ref": "second", "exists": true}}},
+        {"text": "اي", "expect": {"ended_by": ["reply", "clarification"], "no_model_free": true,
+          "expense": {"ref": "second", "exists": true}}}
+      ]
+    },
+    {
+      "id": "S6", "who": "manager",
+      "setup": [
+        {"ref": "oldest", "amount": 1000, "category": "أكل وشرب", "description": "ربطة خبز", "days_ago": 0},
+        {"ref": "middle", "amount": 2500, "category": "ترفيه", "description": "قعدة بالكافيه", "days_ago": 0},
+        {"ref": "newest", "amount": 3500, "category": "صحة", "description": "أدوية", "days_ago": 0}
+      ],
+      "turns": [
+        {"text": "شو آخر 3 مصاريف؟", "expect": {"ended_by": "reply",
+          "tools": [{"tool": "list_expenses", "status": "ok", "args": {}}]}},
+        {"text": "امسح التاني", "expect": {"ended_by": "confirmation",
+          "tools": [{"tool": "delete_expense", "status": "confirmation_required", "args": {"expense_id": "$middle"}}],
+          "reply_has": ["2,500"]}}
+      ]
+    },
+    {
+      "id": "S7", "who": "manager",
+      "setup": [{"ref": "pharmacy", "amount": 8500, "category": "صحة", "description": "دوا من صيدلية الشفاء", "days_ago": 42}],
+      "turns": [
+        {"text": "وين صرفت عند الصيدلية؟", "expect": {"ended_by": "reply",
+          "tools": [{"tool": "search_expenses", "status": "ok", "args": {}}],
+          "without_args": {"search_expenses": ["period"]}, "search_finds": "$pharmacy"}}
+      ]
+    },
+    {
+      "id": "S8", "who": "manager", "setup": [],
+      "turns": [
+        {"text": "كيف فينا نوفّر هالشهر؟", "expect": {"ended_by": "reply",
+          "tools": [{"tool": "check_budget", "status": "ok", "args": {}}], "no_ungrounded": true}}
+      ]
+    },
+    {
+      "id": "S9", "who": "member", "setup": [],
+      "turns": [
+        {"text": "قديش صرف أبوي هالشهر؟", "expect": {"ended_by": "reply", "any_status": "forbidden",
+          "reply_lacks": ["إذا إنت", "إذا انت", "إذا كنت", "اذا كنت", "خبرني إذا", "شو اسم", "مين"]}}
+      ]
+    },
+    {
+      "id": "S10", "who": "manager", "setup": [],
+      "turns": [
+        {"text": "كم صرفنا على الأكل هالشهر؟", "expect": {"ended_by": "reply",
+          "tools": [{"tool": "get_total", "status": "ok", "args": {"period": "this_month", "category": "أكل وشرب"}}]}},
+        {"text": "وبالشهر الماضي؟", "expect": {"ended_by": "reply",
+          "tools": [{"tool": "get_total", "status": "ok", "args": {"period": ["last_month", "2026-10"], "category": "أكل وشرب"}}]}}
+      ]
+    }
+  ]
+}
