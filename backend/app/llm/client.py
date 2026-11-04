@@ -1,0 +1,442 @@
+"""Groq client (§6.3): native tool calling, or a JSON-in-text fallback with the same schemas.
+
+- Retries timeouts, connection errors, 5xx and 429 with exponential backoff and jitter; a 429
+  waits for `retry-after` when the header is present.
+- Never returns None (A1): after the last attempt it raises a typed `LLMError`.
+- A limiter per model keeps requests under the tokens-per-minute limit, from a rolling window
+  of its own usage and the `x-ratelimit-*` headers, so that 429s are avoided rather than retried.
+- Every attempt is reported through `on_attempt`; the agent loop writes it to `llm_calls`.
+"""
+import json
+import random
+import re
+import time
+from collections import deque
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
+
+import httpx
+
+GROQ_URL = "https://api.groq.com/openai/v1"
+EXPECTED_COMPLETION_TOKENS = 300  # added to the prompt estimate when reserving limiter capacity
+_UNSET: Any = object()
+
+
+# ---------- errors ----------
+
+class LLMError(Exception):
+    kind = "error"
+    retryable = False
+
+    def __init__(self, message: str, http_status: int | None = None) -> None:
+        super().__init__(message)
+        self.http_status = http_status
+
+
+class LLMTimeoutError(LLMError):
+    kind = "timeout"
+    retryable = True
+
+
+class LLMServerError(LLMError):
+    kind = "server_error"
+    retryable = True
+
+
+class LLMRateLimitError(LLMError):
+    kind = "rate_limited"
+    retryable = True
+
+
+class LLMRequestError(LLMError):
+    """A 4xx other than 429 (bad request, unknown model, invalid key): not retried."""
+
+    kind = "request_error"
+
+
+class LLMResponseError(LLMError):
+    """HTTP 200 with a body that cannot be read."""
+
+    kind = "bad_response"
+
+
+# ---------- results ----------
+
+@dataclass
+class Usage:
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    reasoning_tokens: int = 0
+
+    @property
+    def total_tokens(self) -> int:
+        return self.prompt_tokens + self.completion_tokens
+
+    def __add__(self, other: "Usage") -> "Usage":
+        return Usage(self.prompt_tokens + other.prompt_tokens, self.completion_tokens + other.completion_tokens,
+                     self.reasoning_tokens + other.reasoning_tokens)
+
+    @classmethod
+    def from_api(cls, usage: dict | None) -> "Usage":
+        usage = usage or {}
+        details = usage.get("completion_tokens_details") or {}
+        return cls(usage.get("prompt_tokens") or 0, usage.get("completion_tokens") or 0,
+                   details.get("reasoning_tokens") or 0)
+
+    def as_dict(self) -> dict:
+        return {"prompt": self.prompt_tokens, "completion": self.completion_tokens,
+                "reasoning": self.reasoning_tokens, "total": self.total_tokens}
+
+
+@dataclass
+class ToolCall:
+    id: str
+    name: str
+    arguments: dict | None  # None when the model's arguments are not a JSON object
+    raw_arguments: str
+    error: str | None = None
+
+
+@dataclass
+class Attempt:
+    model: str
+    attempt: int
+    status: str  # ok, timeout, server_error, rate_limited, request_error, bad_response
+    http_status: int | None
+    latency_ms: int
+    usage: Usage | None = None
+    error: str | None = None
+    waited_ms: int = 0  # time the limiter held the request back
+
+
+@dataclass
+class LLMResponse:
+    model: str
+    content: str | None
+    tool_calls: list[ToolCall]
+    usage: Usage
+    latency_ms: int
+    attempts: int
+    assistant_message: dict  # to append to the conversation before the tool results
+
+
+# ---------- rate limiting ----------
+
+_DURATION = re.compile(r"^(?:(\d+(?:\.\d+)?)h)?(?:(\d+(?:\.\d+)?)m(?!s))?(?:(\d+(?:\.\d+)?)s)?(?:(\d+(?:\.\d+)?)ms)?$")
+
+
+def parse_duration(value: str | None) -> float | None:
+    """Groq's reset values ('2.25s', '1m26.4s', '7.66ms') or retry-after seconds → seconds."""
+    if not value:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        pass
+    match = _DURATION.match(value.strip())
+    if not match or not any(match.groups()):
+        return None
+    hours, minutes, seconds, millis = (float(g) if g else 0.0 for g in match.groups())
+    return hours * 3600 + minutes * 60 + seconds + millis / 1000
+
+
+class RateLimiter:
+    """Keeps one model under its tokens-per-minute limit."""
+
+    def __init__(self, tokens_per_minute: int = 8000, window: float = 60.0,
+                 clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep) -> None:
+        self.limit = tokens_per_minute
+        self.window = window
+        self._clock = clock
+        self._sleep = sleep
+        self._events: deque[list] = deque()  # [timestamp, tokens]
+        self._remaining: int | None = None
+        self._reset_at: float | None = None
+        self.waited_total = 0.0
+
+    def _used(self, now: float) -> int:
+        while self._events and self._events[0][0] + self.window <= now:
+            self._events.popleft()
+        return sum(tokens for _, tokens in self._events)
+
+    def acquire(self, estimate: int) -> list:
+        """Wait until `estimate` tokens fit, then reserve them. Returns the reservation for `settle`."""
+        while True:
+            now = self._clock()
+            if self._reset_at is not None and now >= self._reset_at:
+                self._remaining = self._reset_at = None
+            if self._remaining is not None and estimate > self._remaining:
+                delay = self._reset_at - now
+            else:
+                used = self._used(now)
+                if used + estimate <= self.limit or not self._events:
+                    break
+                delay = self._events[0][0] + self.window - now
+            delay = max(delay, 0.05)
+            self._sleep(delay)
+            self.waited_total += delay
+        event = [self._clock(), estimate]
+        self._events.append(event)
+        if self._remaining is not None:
+            self._remaining -= estimate
+        return event
+
+    @staticmethod
+    def settle(event: list, tokens: int) -> None:
+        """Replace the reservation with the tokens actually used."""
+        event[1] = tokens
+
+    def update(self, headers: httpx.Headers | dict) -> None:
+        limit = headers.get("x-ratelimit-limit-tokens")
+        if limit and limit.isdigit():
+            self.limit = int(limit)
+        remaining = headers.get("x-ratelimit-remaining-tokens")
+        reset = parse_duration(headers.get("x-ratelimit-reset-tokens"))
+        if remaining is not None and remaining.lstrip("-").isdigit() and reset is not None:
+            self._remaining = int(remaining)
+            self._reset_at = self._clock() + reset
+
+
+def estimate_tokens(payload: dict) -> int:
+    """Rough prompt size: about 3 characters per token, plus the expected completion."""
+    text = json.dumps([payload.get("messages"), payload.get("tools")], ensure_ascii=False)
+    return len(text) // 3 + EXPECTED_COMPLETION_TOKENS
+
+
+# ---------- JSON fallback (TOOL_MODE=json) ----------
+
+JSON_MODE_INSTRUCTIONS = (
+    "Tools are described below as JSON schemas. Answer with one JSON object only: either "
+    '{"tool_calls": [{"name": "<tool>", "arguments": {...}}]} to call tools, or {"reply": "<text>"} '
+    "to answer the user. Tool results come back in messages that start with TOOL RESULT."
+)
+
+
+def _to_json_mode(messages: list[dict], tools: list[dict]) -> list[dict]:
+    schemas = json.dumps([t["function"] for t in tools], ensure_ascii=False, separators=(",", ":"))
+    names: dict[str, str] = {}
+    converted = []
+    for message in messages:
+        role = message["role"]
+        if role == "system":
+            converted.append({"role": "system",
+                              "content": f"{message['content']}\n\n{JSON_MODE_INSTRUCTIONS}\nTools: {schemas}"})
+        elif role == "assistant" and message.get("tool_calls"):
+            calls = []
+            for call in message["tool_calls"]:
+                names[call["id"]] = call["function"]["name"]
+                try:
+                    arguments = json.loads(call["function"]["arguments"])
+                except (TypeError, ValueError):
+                    arguments = call["function"]["arguments"]
+                calls.append({"name": call["function"]["name"], "arguments": arguments})
+            converted.append({"role": "assistant", "content": json.dumps({"tool_calls": calls}, ensure_ascii=False)})
+        elif role == "tool":
+            name = names.get(message.get("tool_call_id"), "tool")
+            converted.append({"role": "user", "content": f"TOOL RESULT {name}: {message['content']}"})
+        else:
+            converted.append(message)
+    return converted
+
+
+def _parse_arguments(raw: Any) -> tuple[dict | None, str, str | None]:
+    if isinstance(raw, dict):
+        return raw, json.dumps(raw, ensure_ascii=False), None
+    try:
+        value = json.loads(raw) if raw else {}
+    except (TypeError, ValueError) as exc:
+        return None, str(raw), f"arguments are not valid JSON: {exc}"
+    if not isinstance(value, dict):
+        return None, str(raw), "arguments must be a JSON object"
+    return value, raw, None
+
+
+def _native_message(message: dict) -> tuple[str | None, list[ToolCall], dict]:
+    calls = []
+    for raw in message.get("tool_calls") or []:
+        arguments, text, error = _parse_arguments(raw["function"].get("arguments"))
+        calls.append(ToolCall(raw["id"], raw["function"]["name"], arguments, text, error))
+    assistant = {"role": "assistant", "content": message.get("content")}
+    if message.get("tool_calls"):
+        assistant["tool_calls"] = [
+            {"id": c["id"], "type": "function",
+             "function": {"name": c["function"]["name"], "arguments": c["function"].get("arguments") or "{}"}}
+            for c in message["tool_calls"]
+        ]
+    return message.get("content"), calls, assistant
+
+
+def _json_mode_message(message: dict) -> tuple[str | None, list[ToolCall], dict]:
+    content = message.get("content") or ""
+    try:
+        data = json.loads(content)
+    except ValueError:
+        data = None
+    if not isinstance(data, dict) or not data.get("tool_calls"):
+        reply = data.get("reply") if isinstance(data, dict) and "reply" in data else content
+        return reply, [], {"role": "assistant", "content": reply}
+    calls, wire = [], []
+    for index, raw in enumerate(data["tool_calls"], start=1):
+        raw = raw if isinstance(raw, dict) else {}
+        arguments, text, error = _parse_arguments(raw.get("arguments", {}))
+        call_id = f"call_{index}"
+        calls.append(ToolCall(call_id, str(raw.get("name", "")), arguments, text, error))
+        wire.append({"id": call_id, "type": "function", "function": {"name": str(raw.get("name", "")), "arguments": text}})
+    return None, calls, {"role": "assistant", "content": None, "tool_calls": wire}
+
+
+# ---------- client ----------
+
+def _error_text(response: httpx.Response) -> str:
+    try:
+        error = response.json().get("error") or {}
+        return f"{error.get('code') or response.status_code}: {error.get('message', '')}"[:500]
+    except ValueError:
+        return response.text[:500]
+
+
+class GroqClient:
+    def __init__(
+        self,
+        api_key: str,
+        *,
+        base_url: str = GROQ_URL,
+        timeout: float = 30.0,
+        max_retries: int = 3,
+        max_rate_limit_retries: int | None = None,
+        max_retry_wait: float = 60.0,
+        reasoning_effort: str | None = "low",
+        max_tokens: int = 1024,
+        tool_mode: str = "native",
+        tokens_per_minute: int = 8000,
+        transport: httpx.BaseTransport | None = None,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], None] = time.sleep,
+        jitter: Callable[[], float] = random.random,
+    ) -> None:
+        if tool_mode not in ("native", "json"):
+            raise ValueError(f"unknown tool mode {tool_mode!r}")
+        self.max_retries = max_retries
+        self.max_rate_limit_retries = max_rate_limit_retries
+        self.max_retry_wait = max_retry_wait
+        self.reasoning_effort = reasoning_effort
+        self.max_tokens = max_tokens
+        self.tool_mode = tool_mode
+        self.tokens_per_minute = tokens_per_minute
+        self._clock = clock
+        self._sleep = sleep
+        self._jitter = jitter
+        self._http = httpx.Client(base_url=base_url, timeout=timeout, transport=transport,
+                                  headers={"Authorization": f"Bearer {api_key}"})
+        self.limiters: dict[str, RateLimiter] = {}
+        self.last_rate_limits: dict[str, dict[str, str]] = {}
+
+    @classmethod
+    def from_settings(cls, settings: Any, **overrides: Any) -> "GroqClient":
+        if not settings.groq_key_present:
+            raise LLMRequestError("GROQ_API_KEY is not set")
+        options = {"timeout": settings.llm_timeout, "reasoning_effort": settings.reasoning_effort,
+                   "max_tokens": settings.llm_max_tokens, "tool_mode": settings.tool_mode, **overrides}
+        return cls(settings.groq_api_key.get_secret_value(), **options)
+
+    def limiter(self, model: str) -> RateLimiter:
+        if model not in self.limiters:
+            self.limiters[model] = RateLimiter(self.tokens_per_minute, clock=self._clock, sleep=self._sleep)
+        return self.limiters[model]
+
+    def _payload(self, model: str, messages: list[dict], tools: list[dict], temperature: float,
+                 reasoning_effort: str | None) -> dict:
+        payload: dict[str, Any] = {"model": model, "temperature": temperature, "max_tokens": self.max_tokens}
+        if reasoning_effort:
+            payload["reasoning_effort"] = reasoning_effort
+        if self.tool_mode == "json":
+            payload["messages"] = _to_json_mode(messages, tools) if tools else messages
+            payload["response_format"] = {"type": "json_object"}
+        else:
+            payload["messages"] = messages
+            if tools:
+                payload["tools"] = tools
+                payload["tool_choice"] = "auto"
+        return payload
+
+    def _backoff(self, attempt: int) -> float:
+        return 2 ** (attempt - 1) + self._jitter()
+
+    def chat(
+        self,
+        model: str,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        *,
+        on_attempt: Callable[[Attempt], None] | None = None,
+        temperature: float = 0.0,
+        reasoning_effort: str | None = _UNSET,
+    ) -> LLMResponse:
+        effort = self.reasoning_effort if reasoning_effort is _UNSET else reasoning_effort
+        payload = self._payload(model, messages, tools or [], temperature, effort)
+        estimate = estimate_tokens(payload)
+        limiter = self.limiter(model)
+        rate_limit_retries = 0
+
+        for attempt in range(1, self.max_retries + 2):
+            waited_before = limiter.waited_total
+            reservation = limiter.acquire(estimate)
+            waited_ms = int((limiter.waited_total - waited_before) * 1000)
+            started = self._clock()
+            response: httpx.Response | None = None
+            wait: float | None = None
+            try:
+                response = self._http.post("/chat/completions", json=payload)
+            except httpx.TimeoutException as exc:
+                error: LLMError = LLMTimeoutError(f"timeout: {exc}")
+            except httpx.HTTPError as exc:
+                error = LLMServerError(f"connection error: {exc}")
+            else:
+                limiter.update(response.headers)
+                self.last_rate_limits[model] = {k: v for k, v in response.headers.items()
+                                                if k.startswith("x-ratelimit") or k == "retry-after"}
+                if response.status_code == 200:
+                    try:
+                        result = self._read(model, response, attempt, int((self._clock() - started) * 1000))
+                    except (ValueError, KeyError, TypeError, IndexError) as exc:
+                        error = LLMResponseError(f"unreadable response: {exc}", 200)
+                    else:
+                        limiter.settle(reservation, result.usage.total_tokens)
+                        if on_attempt:
+                            on_attempt(Attempt(model, attempt, "ok", 200, result.latency_ms, result.usage,
+                                               waited_ms=waited_ms))
+                        return result
+                elif response.status_code == 429:
+                    error = LLMRateLimitError(_error_text(response), 429)
+                    wait = parse_duration(response.headers.get("retry-after"))
+                elif response.status_code >= 500:
+                    error = LLMServerError(_error_text(response), response.status_code)
+                else:
+                    error = LLMRequestError(_error_text(response), response.status_code)
+
+            latency_ms = int((self._clock() - started) * 1000)
+            limiter.settle(reservation, 0 if response is None or response.status_code == 429 else estimate)
+            if on_attempt:
+                on_attempt(Attempt(model, attempt, error.kind, error.http_status, latency_ms, None, str(error),
+                                   waited_ms=waited_ms))
+            if not error.retryable or attempt > self.max_retries:
+                raise error
+            if isinstance(error, LLMRateLimitError):
+                rate_limit_retries += 1
+                if self.max_rate_limit_retries is not None and rate_limit_retries > self.max_rate_limit_retries:
+                    raise error
+                if wait is not None and wait > self.max_retry_wait:
+                    raise LLMRateLimitError(f"{error} (retry-after {wait:.0f} s is too long)", 429)
+            self._sleep(wait if wait is not None else self._backoff(attempt))
+        raise AssertionError("unreachable")
+
+    def _read(self, model: str, response: httpx.Response, attempts: int, latency_ms: int) -> LLMResponse:
+        body = response.json()
+        message = body["choices"][0]["message"]
+        reader = _json_mode_message if self.tool_mode == "json" else _native_message
+        content, calls, assistant = reader(message)
+        return LLMResponse(model, content, calls, Usage.from_api(body.get("usage")), latency_ms, attempts, assistant)
+
+    def close(self) -> None:
+        self._http.close()

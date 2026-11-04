@@ -30,12 +30,21 @@ class Settings(BaseSettings):
     embedding_model: str = "bge-m3"
     model_main: str = "openai/gpt-oss-120b"
     model_small: str = "openai/gpt-oss-20b"
+    reasoning_effort: Literal["low", "medium", "high"] = "low"
+    llm_max_steps: int = 6
+    llm_max_tokens: int = 1024
+    llm_timeout: float = 30.0
+    tool_mode: Literal["native", "json"] = "native"
     agent_today: date | None = None
     week_start: Weekday = "saturday"
     trend_threshold: float = 0.3
     corrections_enabled: bool = False
     seed_manager_password: SecretStr | None = None
     seed_member_password: SecretStr | None = None
+
+    def model_id(self, name: str) -> str:
+        """'main' or 'small' → the Groq model ID (§6.3 registry)."""
+        return {"main": self.model_main, "small": self.model_small}[name]
 
     @property
     def groq_key_present(self) -> bool:
