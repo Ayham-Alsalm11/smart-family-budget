@@ -1,7 +1,8 @@
 """Registration, login, tokens, invites, members and family settings, through the API."""
 import json
 from concurrent.futures import ThreadPoolExecutor
-from datetime import timedelta
+from datetime import date, timedelta
+from decimal import Decimal
 from threading import Barrier
 
 import jwt
@@ -10,7 +11,7 @@ from sqlalchemy import func, select
 
 from app.auth.passwords import hash_password
 from app.auth.tokens import create_token
-from app.db.models import Family, Invite, Member, PendingAction, utcnow
+from app.db.models import Family, Invite, Member, PendingAction, SavingsGoal, utcnow
 from app.services.accounts import INVITE_ALPHABET, deactivate_member, join_with_code
 from app.services.errors import ConflictError
 from app.services.expenses import add_expense, get_expense
@@ -468,6 +469,128 @@ def test_base_currency_changes_only_without_expenses(api):
     assert family["base_currency"] == "SYP_OLD" and family["monthly_income"] == 500000, "nothing changed"
     same = api.put("/family", json={"base_currency": "SYP_OLD"}, headers=manager.headers)
     assert same.status_code == 200, "naming the current currency is not a change"
+
+
+def family_of(api, who):
+    return api.get("/me", headers=who.headers).json()["family"]
+
+
+def recurring_limit(api, who, category="صحة"):
+    return next(r["limit"] for r in api.get("/budgets", headers=who.headers).json()["budgets"]
+                if r["category"] == category)
+
+
+def add_goal(api, who, target):
+    with api.app.state.session_factory() as session:
+        goal = SavingsGoal(family_id=who.family_id, name="سيارة", target_amount=Decimal(target),
+                           deadline=date(2027, 1, 1), created_by=who.id)
+        session.add(goal)
+        session.commit()
+        return goal.id
+
+
+def test_old_to_new_divides_income_budgets_and_goals_by_100(api):
+    manager = register(api, "sami")
+    month = api.put("/budgets", json={"category": "ترفيه", "amount": 30000, "month": "2026-11"}, headers=manager.headers)
+    recurring = api.put("/budgets", json={"category": "صحة", "amount": 12345}, headers=manager.headers)
+    assert month.status_code == recurring.status_code == 200
+    goal = add_goal(api, manager, 1000000)
+
+    assert api.put("/family", json={"base_currency": "SYP_NEW"}, headers=manager.headers).status_code == 200
+
+    family = family_of(api, manager)
+    assert (family["base_currency"], family["monthly_income"]) == ("SYP_NEW", 5000)
+    assert recurring_limit(api, manager) == 123.45
+    assert recurring_limit(api, manager, "ترفيه") == 300
+    assert column(api, SavingsGoal, goal, "target_amount") == 10000
+
+
+def test_new_to_old_multiplies_by_100(api):
+    manager = register(api, "sami", base_currency="SYP_NEW", monthly_income=5000)
+    api.put("/budgets", json={"category": "صحة", "amount": 123.45}, headers=manager.headers)
+    api.put("/family", json={"base_currency": "SYP_OLD"}, headers=manager.headers)
+    assert family_of(api, manager)["monthly_income"] == 500000
+    assert recurring_limit(api, manager) == 12345
+
+
+def test_conversion_to_dollars_needs_a_rate(api):
+    manager = register(api, "sami")
+    api.put("/budgets", json={"category": "صحة", "amount": 12345}, headers=manager.headers)
+    error = assert_error(api.put("/family", json={"base_currency": "USD"}, headers=manager.headers), 422, "missing_fields")
+    assert error["fields"] == ["usd_rate"]
+    family = family_of(api, manager)
+    assert (family["base_currency"], family["monthly_income"]) == ("SYP_OLD", 500000), "nothing changed"
+    assert recurring_limit(api, manager) == 12345
+
+
+def test_conversion_from_dollars_needs_a_rate(api):
+    manager = register(api, "sami", base_currency="USD", monthly_income=1000)
+    assert_error(api.put("/family", json={"base_currency": "SYP_NEW"}, headers=manager.headers), 422, "missing_fields")
+
+
+def test_conversion_to_dollars_uses_the_family_rate_or_the_one_in_the_request(api):
+    manager = register(api, "sami", usd_rate=100)
+    assert api.put("/family", json={"base_currency": "USD"}, headers=manager.headers).status_code == 200
+    assert family_of(api, manager)["monthly_income"] == 50, "500,000 old = 5,000 new = 50 USD at 100"
+
+    other = register(api, "omar")
+    response = api.put("/family", json={"base_currency": "USD", "usd_rate": 200}, headers=other.headers)
+    assert response.status_code == 200
+    family = family_of(api, other)
+    assert (family["monthly_income"], family["usd_rate"]) == (25, 200)
+
+
+def test_an_income_in_the_same_request_is_already_in_the_new_currency(api):
+    manager = register(api, "sami")
+    api.put("/family", json={"base_currency": "SYP_NEW", "monthly_income": 7000}, headers=manager.headers)
+    assert family_of(api, manager)["monthly_income"] == 7000
+
+
+def test_naming_the_current_currency_converts_nothing(api):
+    manager = register(api, "sami")
+    api.put("/family", json={"base_currency": "SYP_OLD"}, headers=manager.headers)
+    assert family_of(api, manager)["monthly_income"] == 500000
+
+
+def test_a_small_savings_target_does_not_round_to_zero(api):
+    manager = register(api, "sami", usd_rate=20000)
+    goal = add_goal(api, manager, 1)
+    assert api.put("/family", json={"base_currency": "USD"}, headers=manager.headers).status_code == 200
+    assert column(api, SavingsGoal, goal, "target_amount") == Decimal("0.01")
+
+
+def test_conversion_touches_only_this_family(api):
+    manager, other = register(api, "sami"), register(api, "omar")
+    api.put("/budgets", json={"category": "صحة", "amount": 12345}, headers=other.headers)
+    api.put("/family", json={"base_currency": "SYP_NEW"}, headers=manager.headers)
+    assert recurring_limit(api, other) == 12345 and family_of(api, other)["monthly_income"] == 500000
+
+
+def test_demoting_a_manager_revokes_their_open_invites(api):
+    manager = register(api, "sami")
+    second = join(api, manager, "rana", "manager")
+    theirs, mine = invite(api, second), invite(api, manager)
+    assert api.put(f"/members/{second.id}/role", json={"role": "member"}, headers=manager.headers).status_code == 200
+    assert column(api, Invite, theirs["id"], "revoked_at") is not None
+    assert column(api, Invite, mine["id"], "revoked_at") is None
+    assert_error(api.post("/auth/join", json=join_body(theirs["code"], "omar")), 409, "conflict")
+
+
+def test_a_used_invite_is_not_touched_by_a_demotion(api):
+    manager = register(api, "sami")
+    second = join(api, manager, "rana", "manager")
+    used = invite(api, second)
+    api.post("/auth/join", json=join_body(used["code"], "omar"))
+    api.put(f"/members/{second.id}/role", json={"role": "member"}, headers=manager.headers)
+    assert column(api, Invite, used["id"], "revoked_at") is None
+
+
+def test_promotion_revokes_nothing(api):
+    manager = register(api, "sami")
+    open_invite = invite(api, manager)
+    member = join(api, manager, "rana")
+    api.put(f"/members/{member.id}/role", json={"role": "manager"}, headers=manager.headers)
+    assert column(api, Invite, open_invite["id"], "revoked_at") is None
 
 
 def test_new_usd_rate_affects_new_expenses_only(api):

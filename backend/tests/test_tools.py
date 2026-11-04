@@ -108,6 +108,18 @@ def test_edit_and_delete_need_confirmation(session, member_ctx, name, extra):
     assert session.get(PendingAction, action.id).status == "pending"
 
 
+def test_search_without_a_period_looks_at_the_last_3_months(session, manager_ctx, fake_embedder, fake_store):
+    run(session, manager_ctx, "search_expenses", fake_embedder, fake_store, query="صيدلية")
+    assert fake_store.queries[-1]["where"] == {"$and": [{"date_key": {"$gte": 20260901}},
+                                                        {"date_key": {"$lte": 20261130}}]}
+
+
+def test_search_period_in_the_schema():
+    schema = next(s for s in TOOL_SCHEMAS if s["function"]["name"] == "search_expenses")
+    description = schema["function"]["parameters"]["properties"]["period"]["description"]
+    assert description.endswith("omit unless the user names a period (default: last 3 months)")
+
+
 def test_edit_with_invalid_changes_creates_no_pending_action(session, member_ctx):
     mine = expenses.add_expense(session, member_ctx, amount=5000, category=FOOD)
     result = run(session, member_ctx, "edit_expense", expense_id=mine["id"], changes={})
