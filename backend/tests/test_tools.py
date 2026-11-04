@@ -151,3 +151,12 @@ def test_check_budget_hides_untouched_categories(session, member_ctx):
 def test_set_budget_member_forbidden_manager_ok(session, member_ctx, manager_ctx):
     assert run(session, member_ctx, "set_budget", category="ترفيه", amount=30000).code == "forbidden"
     assert run(session, manager_ctx, "set_budget", category="ترفيه", amount=30000).data["monthly_limit"] == 30000
+
+
+def test_prompt_is_filled_and_names_currencies_in_arabic():
+    from datetime import date
+    from app.agent.prompts import build_system_prompt
+    prompt = build_system_prompt(date(2026, 11, 4), "SYP_NEW", corrections=["a", "b", "c", "d"])
+    assert "{" not in prompt and "}" not in prompt
+    assert "Base currency SYP_NEW (ليرة جديدة)" in prompt and "2026-11-03" in prompt
+    assert prompt.count("\n- ") == 3 + 10, "3 corrections at most, plus the 10 rules"
