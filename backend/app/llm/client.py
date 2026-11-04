@@ -243,10 +243,14 @@ class RateLimiter:
                 self._budget, self._budget_at = float(remaining), self._clock()
 
 
+def estimate_prompt_tokens(messages: Any, tools: Any = None) -> int:
+    """Rough size: about 3 characters per token."""
+    return len(json.dumps([messages, tools], ensure_ascii=False)) // 3
+
+
 def estimate_tokens(payload: dict) -> int:
-    """Rough prompt size: about 3 characters per token, plus the expected completion."""
-    text = json.dumps([payload.get("messages"), payload.get("tools")], ensure_ascii=False)
-    return len(text) // 3 + EXPECTED_COMPLETION_TOKENS
+    """The prompt's rough size plus the expected completion."""
+    return estimate_prompt_tokens(payload.get("messages"), payload.get("tools")) + EXPECTED_COMPLETION_TOKENS
 
 
 # ---------- JSON fallback (TOOL_MODE=json) ----------

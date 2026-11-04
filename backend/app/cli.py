@@ -16,7 +16,7 @@ from typing import Any, TextIO
 from sqlalchemy import select
 
 from app.agent.context import ToolContext
-from app.agent.loop import TurnResult, run_turn
+from app.agent.loop import TurnOptions, TurnResult, run_turn
 from app.db.models import Member
 from app.db.session import init_db, make_engine, make_session_factory
 from app.llm.client import GroqClient
@@ -96,7 +96,7 @@ def main(argv: list[str] | None = None, client: Any = None, input_fn: Callable[[
         if message.lower() in EXIT_WORDS:
             break
         print_turn(run_turn(session, ctx, message, client, embedder=embedder, vector_store=store,
-                            max_steps=settings.llm_max_steps), out)
+                            max_steps=settings.llm_max_steps, options=TurnOptions.from_settings(settings)), out)
     session.close()
     engine.dispose()
     return 0

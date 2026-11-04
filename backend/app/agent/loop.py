@@ -3,7 +3,7 @@
 One turn = at most `max_steps` LLM steps. Tool calls of one step run in order; invalid ones are not
 executed and their error goes back to the model; `ask_clarification` ends the turn. Every LLM attempt
 goes to `llm_calls`, every tool call to `tool_log`, and the user message and the reply to `messages`.
-Sending earlier turns to the model (§6.8) comes in step 6.
+Earlier turns reach the model through `agent/memory.py` (§6.8).
 """
 import json
 import re
@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.agent.context import ToolContext
 from app.agent.grounding import ungrounded_numbers
+from app.agent.memory import linked_source_text, memory_for_model, recent_messages
 from app.agent.prompts import build_system_prompt
 from app.db.models import Family, LlmCall, Message, ToolLog
 from app.llm.client import Attempt, LLMError, LLMToolValidationError, Usage
@@ -28,6 +29,18 @@ REPLY_TOOL_REJECTED = "عذراً، ما قدرت نفّذ طلبك بالشكل
 MAX_TOOL_CORRECTIONS = 2  # provider-side rejections (tool_use_failed) the model may fix in one turn
 _REJECTED_TOOL = re.compile(r"for tool (\w+)")
 _REJECTION_PREFIX = re.compile(r"^(?:tool_use_failed:\s*)?(?:tool call validation failed:\s*)+", re.IGNORECASE)
+SUMMARY_MAX_IDS = 5
+
+
+@dataclass(frozen=True)
+class TurnOptions:
+    memory_messages: int = 10
+    memory_hours: int = 24
+    memory_max_tokens: int = 600
+
+    @classmethod
+    def from_settings(cls, settings: Any) -> "TurnOptions":
+        return cls(settings.memory_messages, settings.memory_hours, settings.memory_max_tokens)
 
 
 def _rejection(error: LLMToolValidationError) -> tuple[str, str]:
@@ -66,13 +79,25 @@ class TurnResult:
     error: str | None = None
 
 
+def _expense_ids(step: StepRecord) -> list[int]:
+    if step.status != "ok":
+        return []
+    data = step.result.get("data") or {}
+    if step.tool == "add_expense":
+        return [data["expense"]["id"]]
+    if step.tool == "list_expenses":
+        return [row["id"] for row in data["expenses"]]
+    if step.tool == "search_expenses":
+        return [row["id"] for row in data["matches"]]
+    return []
+
+
 def _summary(steps: list[StepRecord]) -> str:
+    """Goes to the model with the reply (§6.8): the ids are what "امسح التاني" refers to."""
     parts = []
     for s in steps:
-        if s.tool == "add_expense" and s.status == "ok" and "data" in s.result:
-            parts.append(f"add_expense → #{s.result['data']['expense']['id']}")
-        else:
-            parts.append(f"{s.tool} → {s.status}")
+        ids = _expense_ids(s)[:SUMMARY_MAX_IDS]
+        parts.append(f"{s.tool} → {', '.join(f'#{i}' for i in ids) if ids else s.status}")
     return "; ".join(parts)
 
 
@@ -87,17 +112,21 @@ def run_turn(
     vector_store: Any = None,
     max_steps: int = 6,
     corrections: list[str] | None = None,
+    options: TurnOptions = TurnOptions(),
 ) -> TurnResult:
     model = model or ctx.model
     family = session.get(Family, ctx.family_id)
+    history = recent_messages(session, ctx, options.memory_messages, options.memory_hours)
     user_row = Message(family_id=ctx.family_id, member_id=ctx.member_id, role="user", content=message)
     session.add(user_row)
     session.commit()
     ctx = replace(ctx, message_id=user_row.id, model=model)
-    deps = ToolDeps(session, source_text=message, embedder=embedder, vector_store=vector_store)
+    deps = ToolDeps(session, source_text=linked_source_text(history, message), embedder=embedder,
+                    vector_store=vector_store)
 
     messages: list[dict] = [
         {"role": "system", "content": build_system_prompt(ctx.today, family.base_currency, corrections)},
+        *memory_for_model(history, options.memory_max_tokens),
         {"role": "user", "content": message},
     ]
     turn = TurnResult(reply="", ended_by="", message_id=user_row.id)
@@ -190,6 +219,6 @@ def run_turn(
                 model=model,
             ))
     session.add(Message(family_id=ctx.family_id, member_id=ctx.member_id, role="assistant", content=turn.reply,
-                        tool_summary=_summary(turn.steps) or None))
+                        tool_summary=_summary(turn.steps) or None, ended_by=turn.ended_by))
     session.commit()
     return turn

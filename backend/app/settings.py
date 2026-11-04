@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     llm_max_steps: int = 6
     llm_max_tokens: int = 1024
     llm_timeout: float = 30.0
+    memory_messages: int = 10  # 0 switches the conversation memory off
+    memory_hours: int = 24
+    memory_max_tokens: int = 600
     tool_mode: Literal["native", "json"] = "native"
     agent_today: date | None = None
     week_start: Weekday = "saturday"

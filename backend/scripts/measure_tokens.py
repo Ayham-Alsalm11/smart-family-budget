@@ -21,7 +21,7 @@ import httpx
 from sqlalchemy import select
 
 from app.agent.context import ToolContext
-from app.agent.loop import run_turn
+from app.agent.loop import TurnOptions, run_turn
 from app.db import seed
 from app.db.models import Member
 from app.db.session import init_db, make_engine, make_session_factory
@@ -152,7 +152,8 @@ def main(argv: list[str] | None = None) -> int:
                 ctx = ToolContext(who.family_id, who.id, who.role, args.today, model)
                 started = time.perf_counter()
                 turn = run_turn(session, ctx, text, client, model=model, embedder=embedder if store else None,
-                                vector_store=store, max_steps=settings.llm_max_steps)
+                                vector_store=store, max_steps=settings.llm_max_steps,
+                                options=TurnOptions(memory_messages=0))  # each message stands alone
                 results.append({
                     "n": number, "setup": is_setup, "user": who.username, "text": text, "reply": turn.reply, "ended_by": turn.ended_by,
                     "llm_steps": turn.llm_steps,

@@ -5,7 +5,7 @@ from fastapi import APIRouter, Query, Request
 from pydantic import BaseModel, StringConstraints
 from sqlalchemy import select
 
-from app.agent.loop import run_turn
+from app.agent.loop import TurnOptions, run_turn
 from app.api.deps import SearchServices
 from app.auth.dependencies import AppSettings, Context, DbSession
 from app.db.models import Message
@@ -28,7 +28,7 @@ def chat(body: Chat, request: Request, session: DbSession, ctx: Context, setting
     if client is None:
         raise UnavailableError("المحادثة متوقفة: مفتاح Groq غير موجود في إعدادات الخادم.")
     turn = run_turn(session, ctx, body.message, client, embedder=rag.embedder, vector_store=rag.vector_store,
-                    max_steps=settings.llm_max_steps)
+                    max_steps=settings.llm_max_steps, options=TurnOptions.from_settings(settings))
     reply = {"reply": turn.reply, "steps": [step.as_dict() for step in turn.steps], "alerts": turn.alerts,
              "message_id": turn.message_id}
     if turn.pending_action:
