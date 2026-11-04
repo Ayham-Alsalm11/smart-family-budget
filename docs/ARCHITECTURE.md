@@ -2,7 +2,7 @@
 
 **Project:** Family Budget Agent (Graduation Project 2)
 **Author:** Ayham Al-Salem · **Supervisors:** Dr. Nasreen Suleiman, Eng. Zainab Baghdadi
-**Version:** 1.4 · 5 November 2026 · **Branch:** `gp2-agent` · Changes since 1.0 are listed in §14.
+**Version:** 1.5 · 5 November 2026 · **Branch:** `gp2-agent` · Changes since 1.0 are listed in §14.
 
 This document turns the methodology of *Report Part 1* (Chapter 4) into a specification that the code is written from. It records every architectural decision taken after Seminar 1. When the code and this document disagree, fix one of them; do not leave them out of sync.
 
@@ -67,16 +67,18 @@ smart-family-budget/
 │   │   ├── main.py            # FastAPI app and routers
 │   │   ├── settings.py        # configuration from environment variables
 │   │   ├── cli.py             # terminal chat for development
-│   │   ├── api/               # routers: auth, chat, expenses, summary, budgets, goals, family, actions, health
-│   │   ├── auth/              # password hashing, JWT, current-member dependency
+│   │   ├── api/               # routers: auth, chat, expenses, summary, budgets, family, actions (goals in step 8); deps, errors
+│   │   ├── auth/              # passwords.py (hashing), tokens.py (JWT), dependencies.py (current member, ToolContext)
 │   │   ├── db/                # models, session, seed, the 12 categories (from GP1 config.py)
 │   │   ├── services/          # all SQL logic + permission checks (used by tools AND by the API)
-│   │   │   ├── periods.py  expenses.py  reports.py  budgets.py  goals.py  insights.py  currency.py  members.py
-│   │   ├── rag/               # embeddings client (Ollama), vector store (Chroma HttpClient)
+│   │   │   ├── periods.py  expenses.py  reports.py  budgets.py  currency.py  accounts.py  pending.py  errors.py
+│   │   │   └── goals.py  insights.py  (step 8)
+│   │   ├── rag/               # embeddings client (Ollama), vector store (Chroma HttpClient), reindex.py (reset command)
 │   │   ├── llm/               # Groq client: tool calling, retries, logging, model registry
-│   │   ├── agent/             # loop, context, memory, prompts, clarification, corrections, grounding
+│   │   ├── agent/             # loop, context, memory, confirm, prompts, grounding; corrections in step 9
 │   │   └── tools/             # tool schemas (JSON) + thin wrappers around services
-│   ├── tests/                 # pytest: services, tools, permissions, agent loop with a mocked LLM
+│   ├── scripts/               # Groq runs: smoke_groq, measure_tokens, api_smoke, run_scenarios + dev_scenarios.json
+│   ├── tests/                 # pytest: services, tools, API permissions, agent loop with a mocked LLM
 │   ├── data/                  # fba.db (untracked)
 │   ├── .venv/                 # GP2's Python environment (untracked)
 │   ├── .env                   # GROQ_API_KEY, JWT_SECRET (untracked, never printed or committed)
@@ -173,17 +175,17 @@ All amounts are stored twice: as entered (`amount`, `currency`) and converted to
 | Table | Columns | Notes |
 |---|---|---|
 | `families` | `id, name, monthly_income, base_currency, usd_rate, created_at` | `base_currency` ∈ {`SYP_NEW`, `SYP_OLD`, `USD`}, default `SYP_NEW`. `usd_rate` = units of new SYP per 1 USD, set by a manager. Income is stored in the base currency. |
-| `members` | `id, family_id, name, username (unique), password_hash, role, is_active, created_at` | `role` ∈ {`manager`, `member`}. A family may have more than one manager. |
-| `invites` | `id, family_id, code (unique), role, created_by, expires_at, used_by, used_at` | Random 8-character code, valid 7 days, single use. |
+| `members` | `id, family_id, name, username (unique), password_hash, role, is_active, failed_logins, locked_until, created_at` | `role` ∈ {`manager`, `member`}. A family may have more than one manager. `failed_logins` and `locked_until` are the login lockout (§5). |
+| `invites` | `id, family_id, code (unique), role, created_by, expires_at, used_by, used_at, revoked_at` | Random 8-character code, valid 7 days, single use. `revoked_at` is set when a manager revokes it, or when its creator is stopped or demoted. |
 | `categories` | `id, name_ar, name_en, budget_percent, keywords, icon` | The same 12 categories as GP1, global to all families. |
 | `expenses` | `id, family_id, member_id, category_id, amount, currency, amount_base, rate_to_base, description, source_text, expense_date, goal_id, created_by_agent, embedded_at, created_at, updated_at` | `source_text` = the original message. `goal_id` only for the "ادخار" category. `created_by_agent` marks rows recorded through chat. `embedded_at` is empty until the row is stored in ChromaDB (A3). |
 | `budgets` | `id, family_id, category_id, monthly_limit, month, created_at` | `month` = `YYYY-MM`, or `NULL` for a recurring default. Limit in base currency. |
 | `savings_goals` | `id, family_id, name, target_amount, deadline, status, created_by, created_at` | `status` ∈ {`active`, `done`, `cancelled`}. Progress = sum of linked "ادخار" expenses. |
-| `messages` | `id, family_id, member_id, role, content, tool_summary, created_at` | `role` ∈ {`user`, `assistant`}. `tool_summary` = short list of the tool calls of that turn, e.g. `add_expense → #45`. |
+| `messages` | `id, family_id, member_id, role, content, tool_summary, ended_by, created_at` | `role` ∈ {`user`, `assistant`}. `tool_summary` = short list of the tool calls of that turn, with expense ids, e.g. `list_expenses → #65, #64`. `ended_by` (assistant messages) ∈ {`reply`, `clarification`, `confirmation`, `confirmed`, `cancelled`, `step_limit`, `llm_error`, `tool_rejected`, `confirm_error`}. |
 | `pending_actions` | `id, family_id, member_id, message_id, tool_name, arguments, status, created_at, expires_at` | Edits and deletions waiting for confirmation (§6.5). |
 | `corrections` | `id, family_id, member_id, message, wrong_call, corrected_call, created_at` | Mirrored in the Chroma collection `corrections` (§6.7). |
-| `tool_log` | `id, message_id, family_id, member_id, step, tool_name, arguments, result, status, latency_ms, model, created_at` | Every tool call. `status` ∈ {`ok`, `error`, `invalid_args`, `forbidden`, `confirmation_required`, `not_found`}. |
-| `llm_calls` | `id, message_id, model, step, attempt, status, http_status, latency_ms, prompt_tokens, completion_tokens, error, created_at` | Every API attempt, so that failures are counted (Objective 7). |
+| `tool_log` | `id, message_id, family_id, member_id, step, tool_name, arguments, result, status, latency_ms, model, created_at` | Every tool call, plus the server's own `confirm_action`, `cancel_action` (step 0), `grounding` and `grounding_repair`. `status` ∈ {`ok`, `error`, `invalid_args`, `forbidden`, `confirmation_required`, `not_found`, `ungrounded`, `conflict`}. |
+| `llm_calls` | `id, message_id, model, step, attempt, status, http_status, latency_ms, prompt_tokens, completion_tokens, reasoning_tokens, cached_tokens, error, created_at` | Every API attempt, so that failures are counted (Objective 7). |
 | `events` *(Priority 4)* | `id, kind, name_ar, start_date, end_date` | Ramadan, Eid al-Fitr, Eid al-Adha, school start, winter. Hijri dates computed per year. |
 
 **Effective budget** for category *c* in month *m*: the `budgets` row for (*c*, *m*); else the recurring row for *c* (`month IS NULL`); else `monthly_income × budget_percent / 100` (the GP1 rule).
@@ -209,7 +211,7 @@ The schema is created with `create_all` in a new database file (`backend/data/fb
 - **One family per account.** The username has 3–30 characters from `a-z`, `0-9`, `_` and `.`, is stored in lower case, and is unique across the whole system. The display name (`name`) is in any language, 1–50 characters.
 - **Password:** at least 8 characters and at most 72 UTF-8 bytes (bcrypt's limit; an Arabic letter takes 2 bytes), with a clear error. The rules apply when a password is chosen, not at login.
 - **JWT:** HS256, with `sub` (the member id), `iat` and `exp`; valid for 7 days. On every request the member is loaded from the database: if missing or `is_active = false`, the answer is 401 at once, even for a valid token. Login paths answer 503 if `JWT_SECRET` is empty or shorter than 32 characters.
-- **Login lockout:** after 5 consecutive failures for a username, login is locked for 5 minutes (`members.failed_logins`, `members.locked_until`). A successful login resets the count. An unknown username, a wrong password and a stopped account get the same message.
+- **Login lockout:** after 5 consecutive failures for a username, login is locked for 5 minutes (`members.failed_logins`, `members.locked_until`). A successful login resets the count. An unknown username, a wrong password and a stopped account get the same message. The lockout itself reveals that a username exists; this is accepted, because registration reveals it anyway ("the name is taken").
 - **Invite code:** 8 upper-case characters from an alphabet without 0, O, 1, I and L, generated with `secrets`, accepted in either case. Single use, valid 7 days, and it carries the role. A manager can list open invites and revoke them (`invites.revoked_at`).
 - **Stopping a member** (`DELETE /members/{id}`): nothing is deleted; `is_active` becomes false. They cannot log in, and their expenses stay in every total under their name. Their pending actions are cancelled and, for a manager, their open invites are revoked.
 - **Last manager:** the last active manager of a family can be neither stopped nor changed to a member.
@@ -241,15 +243,21 @@ A denied tool call returns `{"ok": false, "error": {"code": "forbidden"}}`. The 
 
 ```mermaid
 flowchart TD
-    M[User message] --> C[Build context:<br/>system prompt · today's date · recent turns ·<br/>similar past corrections · tool schemas]
+    M[User message] --> Y{Last assistant message asked to confirm,<br/>action pending, and a short yes or no?}
+    Y -->|yes| Z[execute_action or cancel_action<br/>server writes the reply · no model call]
+    Y -->|no| C[Build context:<br/>system prompt · today's date · recent turns ·<br/>similar past corrections · tool schemas]
     C --> L[LLM step]
     L -->|tool calls| V{Valid arguments?}
     V -->|no| ER[Return error to the model] --> L
     V -->|yes| P{Permitted?}
     P -->|no| FB[Return forbidden] --> L
-    P -->|yes| X[Execute through services · log in tool_log] --> L
+    P -->|yes| X[Execute through services · log in tool_log]
+    X -->|result| L
+    X -->|confirmation_required| CP[Server writes the preview · turn ends]
     L -->|ask_clarification| Q[Send question to user]
-    L -->|final text| GR[Grounding check on numbers] --> R[Reply + steps + alerts]
+    L -->|final text| GR{Numbers grounded?}
+    GR -->|no, first time| RP[Ask the model to repair] --> L
+    GR -->|yes, or already repaired| R[Reply + steps + alerts]
     L -->|step limit reached| S[Apologise and stop]
 ```
 
@@ -261,6 +269,8 @@ flowchart TD
 - An invalid call (unknown tool, missing or wrong-typed argument) is not executed. The validation error goes back to the model as the tool result and counts as a step.
 - **Rejected by the provider:** Groq checks tool calls against the schemas and rejects a broken one with HTTP 400 `tool_use_failed`. This is not a connection failure. The error goes back to the model in the same turn ("Your last tool call was rejected: … Fix the arguments or omit optional ones"), counts as a step, and is logged in `tool_log` as `invalid_args`. At most **2 corrections** per turn; after that the agent asks the user to rephrase (not "connection problem").
 - `ask_clarification` ends the turn: its `question` is the reply.
+- `confirmation_required` ends the turn too: no further model call, and the server writes the reply (§6.5). Calls after it in the same step do not run.
+- One grounding repair per turn (§6.9). It counts in the 6 steps, and the model may call a tool during it. No repair is attempted on the last step. If the repair itself fails (step limit or LLM error), the first reply stands.
 - Each request carries a `ToolContext(family_id, member_id, role, today, model, message_id)`. Tools receive it from the server. It is never part of the tool schemas the LLM sees.
 
 ### 6.3 LLM client (`llm/client.py`)
@@ -282,10 +292,11 @@ The prompt is in English, as short as possible (every call pays for it, §9.5), 
    - Currencies are named in Arabic to the user (ليرة قديمة, ليرة جديدة, دولار), never as codes such as `SYP_OLD`.
    - The category is inferred from the keywords; ask only if it is really unclear ("دفعت 50 لأبو أحمد"), or if the amount is missing.
    - A dollar amount goes to `add_expense` with `USD`; on `missing_fields: usd_rate`, tell the user the family manager must set the dollar rate first.
-   - To edit or delete a described expense ("آخر مصروف"), find its id with `list_expenses` or `search_expenses` first; ask only if several match. Edits and deletions always need confirmation.
+   - To edit or delete a described expense ("آخر مصروف"), find its id with `list_expenses` or `search_expenses`, take the newest match and call the tool, without asking: the confirmation step lets the user refuse. The prompt says nothing about showing a preview, because the server writes it (§6.5).
+   - If the user seems to agree to a pending change in a long sentence, ask them to reply «اي» or press the confirm button.
    - "وزعلي / حسب الفئات" → `get_breakdown`; "كم باقي من الميزانية" → `check_budget`.
    - "وين / على شو صرفت على X": X is a category → `list_expenses`; otherwise `search_expenses`. Search before asking.
-   - `forbidden` → only the family manager can see this; never ask for names.
+   - `forbidden` → say kindly that this is for the family manager only; never ask for names or roles, and never suggest the user say they are the manager.
    - Outside household budgeting (requests to transfer or pay money, investment, loans): decline at once, without tools or questions.
 4. Dialect hints carried over from GP1: "تلاف" = thousands, "ألفين" = 2000, "نص مليون" = 500000, "مبارح" = yesterday, "هالشهر" = this month.
 5. Advice policy (D9): for "how can I save?" questions, call `check_budget` and `compare_months` first (`get_insights` and `check_savings_goal` join when Priority 2 exists), then advise only from those numbers.
@@ -294,18 +305,28 @@ The prompt is in English, as short as possible (every call pays for it, §9.5), 
 
 ### 6.5 Confirmation of edits and deletions
 
-1. The model calls `edit_expense` or `delete_expense` without `confirmation_id`.
-2. The service checks ownership and creates a `pending_actions` row. It returns `confirmation_required` with a preview and the `confirmation_id`.
-3. The assistant shows the preview and asks. In React, confirm and cancel buttons call `POST /actions/{id}/confirm` or `/cancel` directly.
-4. In chat, a confirmation is accepted only in a **later user turn**: the model calls the tool again with `confirmation_id`. The server executes it only if the pending action was created in an earlier message, by the same member, and is less than 10 minutes old. The model therefore cannot confirm its own request within one turn.
+**The model can never run an edit or a deletion.** The tool schemas and argument models have no `confirmation_id`; if the model sends one anyway, the result is `invalid_args`. Only a person can run an action, in one of two ways: the buttons, or a short answer in chat.
 
-**One execution function** for buttons and chat: `execute_action(session, ctx, action_id)` in `services/pending.py`. It checks that the action belongs to the same member, is `pending`, and has not expired (otherwise its status becomes `expired`), and that the permission still holds. It then runs `update_expense` or `delete_expense` and sets the status to `confirmed`; if the service refuses, nothing changes. `cancel_action` sets `cancelled`. The buttons use these functions from step 5b; chat will use the same function in step 6, so until then `edit_expense` and `delete_expense` with a `confirmation_id` return `not_available`.
+1. The model calls `edit_expense` or `delete_expense`. The service checks ownership and creates a `pending_actions` row. A member has **one pending action at most**: a new one cancels any older one.
+2. The tool returns `confirmation_required` and the turn ends at once, with no further model call (`ended_by = confirmation`). The server writes the reply from the row: the amount with thousands separators, the currency in Arabic, the category, the description and the date; for an edit, "قبل" and "بعد"; and at the end "رد بـ «اي» للتأكيد أو «لا» للإلغاء، خلال 10 دقائق." `pending_action` is returned by `/chat`. The grounding check does not apply to text the server writes.
+3. **Buttons:** `POST /actions/{id}/confirm` or `/cancel`.
+4. **Chat:** if the member's last assistant message ended with `confirmation` and its action is still pending, the new message is classified by fixed rules in `agent/confirm.py`, after removing punctuation and diacritics and unifying the hamza forms:
+   - **Yes:** 4 words or fewer, with a yes word (اي، إي، ايه، نعم، أكيد، تمام، موافق، أكّد، اوكي، ok، yes …), no no-word and no digit → `execute_action`.
+   - **No:** 4 words or fewer, with a no word (لا، لأ، لاء، الغي، ألغي، بلاش، خليه، no …), no yes word and no digit → `cancel_action`.
+   - **A negation** (مو، مش، ما، غير …) is never a yes or a no: "مو موافق" must not read as agreement.
+   - **Anything else** is an ordinary turn, and the action stays pending until it expires.
+5. On a yes or a no **the model is not called at all**. The server writes the reply ("تم ✅ حذفت: …", "تمام، ما غيّرت شي."), with clear messages when the time ran out, the expense no longer exists, the action already ran, or the permission is gone (`ended_by` = `confirmed`, `cancelled` or `confirm_error`). `tool_log` records `confirm_action` or `cancel_action`, and both messages go to `messages`.
+
+Any message between the question and the answer ends the link, because the last assistant message no longer asked for a confirmation: "اي" then goes to the model like any other message, and the model has no way to execute.
+
+**One execution function** for buttons and chat: `execute_action(session, ctx, action_id)` in `services/pending.py`. It checks that the action belongs to the same member, is `pending`, and has not expired (otherwise its status becomes `expired`), and that the permission still holds. It then runs `update_expense` or `delete_expense` and sets the status to `confirmed`; if the service refuses, nothing changes. `cancel_action` sets `cancelled`.
 
 ### 6.6 Clarification
 
 - **Structural (Priority 1):**
   - Missing required arguments, or `missing_fields` returned by a tool, lead the model to `ask_clarification`.
-  - The user's answer is linked to the request through the recent turns in memory.
+  - The user's answer is linked to the request through the recent turns in memory (§6.8).
+  - When the previous assistant message ended with `clarification`, the `source_text` of the resulting expense is "<original message> ← <answer>" (a second question adds to the chain), so that it is useful to the correction memory later (§6.7). With the memory off there is no link.
 - **Sampling agreement (Priority 2, from Report Part 1):**
   - On the first step, the model is sampled *n* times at temperature 0.7, plus once greedily at 0.
   - The signature of an action = tool name + normalised decisive arguments (amount, category, currency, date, expense_id).
@@ -325,11 +346,17 @@ The prompt is in English, as short as possible (every call pays for it, §9.5), 
 
 ### 6.8 Conversation memory
 
-The last 10 user/assistant messages of the same member from the last 24 hours, each with its `tool_summary`. References such as "امسحه" or a bare "3000" after a question can then be resolved.
+The last 10 messages of the same member (never another member's) from the last 24 hours, in time order, between the system prompt and the new message. References such as "امسحه", "امسح التاني" or a bare "3000" after a question can then be resolved.
+
+- Assistant messages are sent with their `tool_summary` in brackets. For `add_expense`, `list_expenses` and `search_expenses` it names the resulting expense ids, up to 5 ("list_expenses → #65, #64, #63").
+- A ceiling of about 600 tokens for the whole memory, measured with the rate limiter's own estimate: the oldest messages go first, and any assistant reply over 300 characters is cut.
+- Settings: `MEMORY_MESSAGES=10`, `MEMORY_HOURS=24`, `MEMORY_MAX_TOKENS=600`. `MEMORY_MESSAGES=0` switches it off, for single-message evaluation experiments. The window uses the real clock, not `AGENT_TODAY`.
 
 ### 6.9 Grounding check
 
-After the final reply, numbers in the text are extracted and checked against that turn's tool results. Unmatched numbers are logged as `ungrounded` in `tool_log`. At run time this is only logged; in evaluation it becomes the **grounding rate** metric (§9).
+After the final reply, numbers in the text are extracted and checked against that turn's tool results and the user's current message, because repeating a number the user said is not inventing one. Unmatched numbers are logged as `ungrounded` in `tool_log`; in evaluation this becomes the **grounding rate** metric (§9).
+
+**One repair attempt** (`GROUNDING_REPAIR`, default true; it can be switched off for experiments). If the reply has unmatched numbers, the model is told: "Your reply has numbers that are not in the tool results: X, Y. Rewrite it using only numbers from the tool results, or call a tool to get them. If a number is not available, leave it out." The loop then continues, and the model may call a tool (§6.2). If numbers stay unmatched, the second reply stands and what remains is logged. For evaluation, `TurnResult` and `tool_log` (`grounding_repair`) keep the first reply, its unmatched numbers, whether a repair happened, and the unmatched numbers after it. Text written by the server is not checked.
 
 **Normalisation and tolerances** (from the step 5a false alarms):
 - Arabic-Indic digits, "," / "٬" and spaces between groups of three digits are normalised ("١٥ ٠٠٠" = 15000). "ألف / آلاف / تلاف / k" multiply by 1,000 and "مليون" by 1,000,000 ("15 ألف", "26k").
@@ -349,13 +376,13 @@ Every tool returns JSON: `{"ok": true, "data": …}` or `{"ok": false, "error": 
 | Tool | Arguments (required **bold**) | Returns | Permission |
 |---|---|---|---|
 | `add_expense` | **amount** (number > 0), **category** (one of the 12; checked on the server), currency (enum, default family base), date (YYYY-MM-DD, default today), description, goal_name | id, stored values, `amount_base`, budget alerts | all |
-| `edit_expense` | **expense_id**, **changes** {amount, category, currency, date, description}, confirmation_id | preview + `confirmation_required`, or the updated row | own / manager |
-| `delete_expense` | **expense_id**, confirmation_id | preview + `confirmation_required`, or done | own / manager |
+| `edit_expense` | **expense_id**, **changes** {amount, category, currency, date, description} | `confirmation_required` with a preview; ends the turn (§6.5) | own / manager |
+| `delete_expense` | **expense_id** | `confirmation_required` with a preview; ends the turn (§6.5) | own / manager |
 | `list_expenses` | period, category, member, limit (default 10) | rows with ids, newest first | members: own only |
 | `get_total` | **period**, category, member | total in base currency, count | member filter: manager or "me" |
 | `get_breakdown` | **period**, by ∈ {category, member} | rows with totals and shares | `by=member`: manager |
 | `compare_months` | **month_a**, **month_b** (YYYY-MM), category | both totals, difference, change % | all (family level) |
-| `search_expenses` | **query**, period, limit (default 5) | matching expenses by meaning | members: own only |
+| `search_expenses` | **query**, period (default: the last 3 months), limit (default 5) | matching expenses by meaning | members: own only |
 | `check_budget` | category (all if omitted), period (a month: `this_month`, `last_month` or `YYYY-MM`; default `this_month`) | spent, limit, remaining, % used, status | all |
 | `set_budget` | **category**, **amount**, month (omit = recurring), currency | the stored limit | manager |
 | `ask_clarification` | **question**, **missing_fields** (free text, e.g. amount, category, expense) | ends the turn | all |
@@ -421,7 +448,9 @@ Every tool returns JSON: `{"ok": true, "data": …}` or `{"ok": false, "error": 
 | 429 | Login locked | `locked` |
 | 503 | No Groq key, or an unusable `JWT_SECRET` | `not_available` |
 
-**Base currency:** it can change only while the family has no expenses, because `amount_base` is computed in it. Changing `usd_rate` affects new expenses only, because `rate_to_base` is stored with each expense.
+**Base currency:** it can change only while the family has no expenses, because `amount_base` is computed in it. The change converts the monthly income, every stored budget limit and any savings targets with it: old ↔ new by a factor of 100, and any conversion that involves USD needs `usd_rate`, otherwise `missing_fields`. Changing `usd_rate` affects new expenses only, because `rate_to_base` is stored with each expense.
+
+**Demotion:** changing a manager to a member revokes their open invites, as stopping them does.
 
 ---
 
@@ -544,6 +573,8 @@ Fine-tuning · enterprise microservices (API gateway, message broker, one databa
 | Average tokens per agent call | **Measured in step 5a** on the 20 fixed messages with `reasoning_effort=low`: **1,732 tokens per call on `gpt-oss-20b` and 1,714 on `gpt-oss-120b`, above the 1,500 target.** The prompt is about 1,660 of it: tool schemas 1,038, system prompt about 475, chat template about 70. Completion about 60 (reasoning about 11). A message takes 1.9 calls on average, about 3,260 tokens (20b) and 3,160 (120b); two expenses plus a budget check take about 7,200. Default reasoning on 5 of the messages: completion ×2–2.5, the advice message 6,379 instead of 3,896 tokens. With 8,000 tokens a minute, one message takes about a minute. Groq checks tool arguments against the schema: a value outside an enum or a `null` returns HTTP 400 `tool_use_failed` and the turn fails (3 of 20 messages on 20b, 1 on 120b). **Re-measured after step 5a2** (4 Nov): fresh seed database, date 2026-11-04, `low`; messages 1–4 as setup, then the 9 that failed or were weak (5, 9, 12, 14–19; 17 as the member). Tool schemas 1,038 → **898** tokens, but the system prompt grew to about 625 (the 12 categories and the new rules), so the first call still has about **1,594** prompt tokens. Average per call **1,786 (20b) and 1,758 (120b): the 1,400 target is not met.** Per message 4,168 and 3,126 (20b needs 21 calls for the 9 messages, 120b 16). **No `tool_use_failed`** with either model; on 20b, `ask_clarification` with an empty `missing_fields` was refused by the server's validation 3 times and corrected in the same turn. Wait before a call: 8.3 s on average (max 17) on 20b and 5.7 s (max 11) on 120b, against 16 s (max 56) before calibration. Results on the 9 messages, 20b: 5 correct, 2 partial, 2 wrong (was 0, 2, 7); 120b: 5, 4, 0 (was 3, 2, 4). Left wrong or partial: 20b asks for an amount that is given (#5) or after an empty search (#12), and searches for "بابا" instead of being refused (#17); 120b searches "الدكتور" in this month only (#12), writes the year 2024 for 2026 again (#14), and calls one fuel expense "several" (#15); both invent a savings target in the advice (#18) and skip `compare_months`. Grounding check: 4 numbers flagged on the new replies, all real errors (2024; "50 %", "10 %" and "10,000" in the advice). On the step 5a replies, false alarms fell from 24 to 3 (20b), 10 to 2 (120b) and 6 to 0 (default effort), and 2024 and "30–40 %" are still caught |
 | The API on the real model (step 5b) | **Passed** (`api_smoke_20261105_000042.json`; temporary database, in-process ChromaDB, `gpt-oss-120b`, `low`, date 2026-11-04). All 8 steps behaved as expected, with no 429: a family in `SYP_OLD`; an invite and a join; "دفعت 5000 بنزين" and "اشتريت خضرا بـ 3000" each recorded in the right category; a member asking about the manager by display name got `forbidden` and a polite refusal, with no number; "كم صرفنا هالشهر؟" answered 8000 from `get_total`; a member's `DELETE` of the manager's expense got 403; "امسح مصروف البنزين" went `list_expenses` → `delete_expense` → `confirmation_required`, and `POST /actions/{id}/confirm` deleted it (total 3000 afterwards). 18,760 tokens in 11 calls (about 1,705 per call; prompt 1,593 on a first call), and no ungrounded numbers. Left to improve: the refusal adds "if you are the manager, tell me", although the server checks the role and that sentence cannot change anything |
 | Prompt caching on the free tier | **`cached_tokens` does appear above zero, but it did not lower the per-minute charge.** The same full request 3 times (prompt 1,588, completion 29, total 1,617), with the bucket refilled to 8,000 before each: `cached_tokens` 0, 0, 1,536 and `x-ratelimit-remaining-tokens` after each 6,360, 6,360, 6,360, so 1,640 tokens each time, cached or not. Latency did not change either (1.28, 1.37, 1.30 s). **Limits of this result:** one cached request in this test, plus one in the scenario (1,536 of 1,671) out of 11, so hits are irregular even for an identical prefix; and the identical header may be an estimate taken on admission, so a later correction cannot be excluded, and the effect on the daily limit is unknown. **Planning:** §9.5 keeps counting cached tokens in full |
+| Multi-turn scenarios (step 6) | **Incomplete: the run stopped at a 429** (`scenarios_20261105_004633.json`, date 2026-11-04, `low`). `gpt-oss-120b`: S1–S5 and the first turn of S6 ran; the 429 came on the second call of S6's second turn, with `retry-after: 1` and 2,252 tokens left in the minute, so it was the per-minute limit, not the daily one. **S6's second turn, S7–S10 and all of `gpt-oss-20b` have not run**, so grounding repair (S8), search over 6 weeks (S7), the refusal wording (S9) and follow-up questions (S10) are not measured on a real model yet. Results so far: S1, S2 ✅ (a question, then `add_expense` with the linked `source_text`); S3 ✅ (a server preview, then "اي" deleted with no model call); S5 ⚠️ (preview, normal answer, and "اي" executed nothing, but the model called `delete_expense` again, which gave a new preview); S6 first turn ✅; **S4 ❌: "خلي مصروف البنزين 6000" became `add_expense`, a second expense, not an edit.** About 35,500 tokens in 20 successful calls. No repair happened in these turns |
+| Cost of the memory (step 6, partial) | From the turns above, `gpt-oss-120b`, first call of a turn: **1,622 prompt tokens without memory and 1,687 with it** (5 turns, 2–4 messages), so about 65 tokens on average; the largest was 1,755 with 4 messages. The 1,594 of step 5a2 grew to 1,622 from the changed prompt rules and schemas. The 600-token ceiling was not reached |
 | Laptop RAM for running `gpt-oss-20b` locally | Open (fallback only, §9.5) |
 | ChromaDB client and server versions | `chromadb` 1.5.7 in `backend/.venv` for client and server (`chroma run --path data\chroma --port 8001`). Heartbeat OK; `expenses` and `corrections` created with cosine distance (metadata and configuration). The server reports API version 1.0.0 |
 | Ollama with `bge-m3` | Ollama 0.32.3, 1024-dimensional vectors. Warm-up with the model unloaded: 12.2 s; next request 0.5 s. `GET /health`: database, ChromaDB and Ollama `ok` |
@@ -555,6 +586,29 @@ Fine-tuning · enterprise microservices (API gateway, message broker, one databa
 ---
 
 ## 14. Changes
+
+### Version 1.5 (5 November 2026)
+
+After step 6 (memory, linked clarification, confirmation in chat):
+- **§6.5, rewritten:** the model can never run an edit or a deletion, and `confirmation_id` is gone. A person runs an action with the buttons or a short yes or no, classified by fixed rules in `agent/confirm.py` without any model call. The server writes the preview and it ends the turn. One pending action per member. This replaces the old item 4.
+- **§6.1, §6.2:** the fast path before the model, the preview that ends the turn, and one repair attempt inside the step limit.
+- **§6.4:** the newest match without asking; a kinder `forbidden` that never suggests claiming a role; a long agreement is answered with a request for «اي»; no mention of previews.
+- **§6.6:** `source_text` links the original message and the answer.
+- **§6.8:** the memory, with `MEMORY_MESSAGES`, `MEMORY_HOURS` and `MEMORY_MAX_TOKENS`; expense ids in `tool_summary`.
+- **§6.9:** one repair attempt (`GROUNDING_REPAIR`); numbers in the user's current message are accepted.
+- **§7.1:** `search_expenses` without a period looks at the last 3 months; no `confirmation_id`.
+- **§8:** a base-currency change converts income, budgets and savings targets; demotion revokes invites.
+- **§2, §4:** the files of steps 5b and 6; the four columns of 5b, `reasoning_tokens` and `messages.ended_by`; a `conflict` status in `tool_log`.
+- **§5:** the lockout reveals that a username exists; accepted.
+- **§13:** partial scenario results and the cost of the memory.
+- **Decisions of step 5b, now accepted:** 409 for the last manager, a taken username and a base-currency change; 404 for an unknown invite code and 409 for a used, revoked or expired one; 403 for an action confirmed by another member of the family, also a manager; a refused `execute_action` leaves the action pending; `family_id`, `member_id` and `role` in a request body are ignored; attempts during a lock and on a stopped account are not counted.
+- **Decisions taken in step 6:**
+  - A negation (مو، مش، ما، غير) means neither yes nor no, so "مو موافق" is an ordinary turn.
+  - An income sent together with a new base currency is already in that currency and is not converted.
+  - A savings target never rounds down to zero in a conversion.
+  - If a repair fails (step limit or LLM error), the first reply stands; no repair is attempted on the last step.
+  - With the memory off there is no `source_text` link, but "اي" still works, because it reads the last assistant message.
+  - The memory window uses the real clock.
 
 ### Version 1.4 (5 November 2026)
 
