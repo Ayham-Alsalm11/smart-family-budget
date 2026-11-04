@@ -16,8 +16,8 @@ from sqlalchemy.orm import Session
 
 from app.agent.context import ToolContext
 from app.auth.passwords import burn_verification_time, hash_password, validate_password, verify_password
-from app.db.models import ROLES, Expense, Family, Invite, Member, PendingAction, utcnow
-from app.services.currency import parse_amount, parse_rate, validate_currency
+from app.db.models import ROLES, Budget, Expense, Family, Invite, Member, PendingAction, SavingsGoal, utcnow
+from app.services.currency import CENT, convert, parse_amount, parse_rate, validate_currency
 from app.services.errors import (
     AuthenticationError, ConflictError, ForbiddenError, LockedError, NotFoundError, ValidationError,
 )
@@ -264,6 +264,13 @@ def _keep_one_manager(session: Session, family_id: int) -> None:
         raise ConflictError("لا يمكن إزالة آخر مسؤول نشط في العائلة.")
 
 
+def _revoke_open_invites(session: Session, member_id: int) -> None:
+    now = utcnow()
+    session.execute(update(Invite).where(
+        Invite.created_by == member_id, Invite.used_by.is_(None), Invite.revoked_at.is_(None),
+        Invite.expires_at > now).values(revoked_at=now))
+
+
 def deactivate_member(session: Session, ctx: ToolContext, member_id: int) -> dict:
     """No row is deleted: the expenses stay in every total under the member's name (§5)."""
     _require_manager(ctx, "stop members")
@@ -275,10 +282,7 @@ def deactivate_member(session: Session, ctx: ToolContext, member_id: int) -> dic
     session.execute(update(PendingAction).where(
         PendingAction.member_id == member_id, PendingAction.status == "pending").values(status="cancelled"))
     if was_manager:
-        now = utcnow()
-        session.execute(update(Invite).where(
-            Invite.created_by == member_id, Invite.used_by.is_(None), Invite.revoked_at.is_(None),
-            Invite.expires_at > now).values(revoked_at=now))
+        _revoke_open_invites(session, member_id)
     session.commit()
     return member_to_dict(member)
 
@@ -292,14 +296,26 @@ def change_role(session: Session, ctx: ToolContext, member_id: int, role: str) -
     member.role = role
     if demoted:
         _keep_one_manager(session, ctx.family_id)
+        _revoke_open_invites(session, member_id)
     session.commit()
     return member_to_dict(member)
 
 
 # ---------- family ----------
 
+def _convert_family_amounts(session: Session, family: Family, currency: str, usd_rate: Any) -> None:
+    """Budget limits and savings targets are stored in the base currency, so they move with it. A target never
+    rounds down to zero, which the table refuses."""
+    for row in session.scalars(select(Budget).where(Budget.family_id == family.id)):
+        row.monthly_limit, _rate = convert(row.monthly_limit, family.base_currency, currency, usd_rate)
+    for goal in session.scalars(select(SavingsGoal).where(SavingsGoal.family_id == family.id)):
+        goal.target_amount = max(convert(goal.target_amount, family.base_currency, currency, usd_rate)[0], CENT)
+
+
 def update_family(session: Session, ctx: ToolContext, changes: dict[str, Any]) -> dict:
-    """Base currency: only while the family has no expenses, because `amount_base` is computed in it.
+    """Base currency: only while the family has no expenses, because `amount_base` is computed in it. The income,
+    the budget limits and the savings targets are converted with it; a conversion that involves USD needs a rate.
+    An income sent in the same request is already in the new currency.
     The USD rate: freely, because each expense keeps its own `rate_to_base`."""
     _require_manager(ctx, "change the family settings")
     if not changes:
@@ -321,6 +337,10 @@ def update_family(session: Session, ctx: ToolContext, changes: dict[str, Any]) -
         if currency != family.base_currency:
             if session.scalar(select(Expense.id).where(Expense.family_id == family.id).limit(1)) is not None:
                 raise ConflictError("لا يمكن تغيير عملة الأساس لأن للعائلة مصاريف مسجّلة.", ["base_currency"])
+            usd_rate = values.get("usd_rate", family.usd_rate)
+            income, _rate = convert(family.monthly_income, family.base_currency, currency, usd_rate)
+            values.setdefault("monthly_income", income)
+            _convert_family_amounts(session, family, currency, usd_rate)
             values["base_currency"] = currency
 
     for field, value in values.items():

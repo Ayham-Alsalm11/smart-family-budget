@@ -457,7 +457,7 @@ def test_update_family_bad_values(api, body):
 
 
 def test_base_currency_changes_only_without_expenses(api):
-    manager = register(api, "sami")
+    manager = register(api, "sami", usd_rate=100)
     assert api.put("/family", json={"base_currency": "USD"}, headers=manager.headers).status_code == 200
     assert api.put("/family", json={"base_currency": "SYP_OLD"}, headers=manager.headers).status_code == 200
     spend(api, manager)
