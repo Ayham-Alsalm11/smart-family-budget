@@ -6,7 +6,8 @@ import os
 # === Paths ===
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
-DB_PATH = os.path.join(BASE_DIR, "data", "budget.db")
+# GP2: the only change allowed in the baseline (RQ2 evaluation). Without this variable the behaviour is unchanged.
+DB_PATH = os.getenv("BASELINE_DB_PATH", os.path.join(BASE_DIR, "data", "budget.db"))
 
 # === Database ===
 DATABASE_URL = f"sqlite:///{DB_PATH}"
@@ -21,7 +22,8 @@ OLLAMA_BASE_URL = "http://localhost:11434"
 EMBEDDING_MODEL = "bge-m3"
 
 # === ChromaDB ===
-CHROMA_PERSIST_DIR = os.path.join(BASE_DIR, "data", "chroma_db")
+# GP2: the only change allowed in the baseline (RQ2 evaluation). Without this variable the behaviour is unchanged.
+CHROMA_PERSIST_DIR = os.getenv("BASELINE_CHROMA_DIR", os.path.join(BASE_DIR, "data", "chroma_db"))
 
 # === Categories (12 فئة) ===
 CATEGORIES = {
