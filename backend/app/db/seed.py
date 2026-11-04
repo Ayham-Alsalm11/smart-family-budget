@@ -10,10 +10,10 @@ import sys
 from datetime import date, timedelta
 from decimal import Decimal
 
-import bcrypt
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.auth.passwords import hash_password
 from app.db.categories import CATEGORIES
 from app.db.models import Category, Expense, Family, Member
 from app.db.session import init_db, make_engine, make_session_factory
@@ -62,10 +62,6 @@ RENT_DESCRIPTION = "دفعة أجار البيت"
 
 class SeedError(Exception):
     pass
-
-
-def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("ascii")
 
 
 def seed_categories(session: Session) -> int:

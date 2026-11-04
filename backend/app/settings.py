@@ -23,6 +23,11 @@ class Settings(BaseSettings):
 
     groq_api_key: SecretStr | None = None
     jwt_secret: SecretStr | None = None
+    jwt_expire_days: int = 7
+    cors_origins: str = "http://localhost:5173"  # comma-separated
+    login_max_failures: int = 5
+    login_lock_minutes: int = 5
+    invite_days: int = 7
     database_url: str = f"sqlite:///{DEFAULT_DB_PATH.as_posix()}"
     chroma_host: str = "localhost"
     chroma_port: int = 8001
@@ -30,6 +35,7 @@ class Settings(BaseSettings):
     embedding_model: str = "bge-m3"
     model_main: str = "openai/gpt-oss-120b"
     model_small: str = "openai/gpt-oss-20b"
+    agent_model: Literal["main", "small"] = "main"  # the model behind POST /chat
     reasoning_effort: Literal["low", "medium", "high"] = "low"
     llm_max_steps: int = 6
     llm_max_tokens: int = 1024
