@@ -1,4 +1,4 @@
-"""Configuration from environment variables and backend/.env."""
+"""Configuration from environment variables and backend/.env (§1, and the sections that use each setting)."""
 from datetime import date
 from functools import lru_cache
 from pathlib import Path
@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     agent_model: Literal["main", "small"] = "main"  # the model behind POST /chat
     reasoning_effort: Literal["low", "medium", "high"] = "low"
     llm_max_steps: int = 6
-    llm_max_tokens: int = 600  # the limiter reserves all of it; the largest completion measured was 350
+    llm_max_tokens: int = 800  # the largest completion measured was 533; reserving more does not lengthen waits (§13)
     llm_timeout: float = 30.0
     memory_messages: int = 10  # 0 switches the conversation memory off
     memory_hours: int = 24

@@ -1,3 +1,4 @@
+"""The Groq client with a mocked transport: retries, the 429 policy, the limiter and token usage (§6.3)."""
 import json
 import threading
 import time
@@ -65,7 +66,7 @@ def test_success_payload_and_parsing():
     result = chat(client, attempts)
     body = json.loads(sent[0].content)
     assert body["reasoning_effort"] == "low" and body["temperature"] == 0 and body["tool_choice"] == "auto"
-    assert body["max_tokens"] == 600 and body["tools"] == TOOLS
+    assert body["max_tokens"] == 800 and body["tools"] == TOOLS
     assert sent[0].headers["authorization"] == "Bearer test-key"
     call = result.tool_calls[0]
     assert (call.name, call.arguments) == ("add_expense", {"amount": 5000, "category": "بنزين ومواصلات"})
@@ -204,7 +205,7 @@ def truncated(usage=USAGE):
 def test_a_reply_cut_by_max_tokens_is_a_clear_error():
     client, sent, clock = make([truncated()])
     attempts = []
-    with pytest.raises(LLMTruncatedError, match="max_tokens=600") as caught:
+    with pytest.raises(LLMTruncatedError, match="max_tokens=800") as caught:
         chat(client, attempts)
     assert len(sent) == 1 and clock.sleeps == [], "the same request would be cut again"
     assert [(a.status, a.http_status) for a in attempts] == [("truncated", 200)]
@@ -217,8 +218,8 @@ def test_a_finished_reply_is_not_an_error():
     assert chat(client).finish_reason == "stop"
 
 
-def test_max_tokens_default_is_600():
-    assert Settings(_env_file=None).llm_max_tokens == 600
+def test_max_tokens_default_is_800():
+    assert Settings(_env_file=None).llm_max_tokens == 800
 
 
 def test_invalid_tool_arguments_are_reported_not_raised():
@@ -236,7 +237,7 @@ def test_rate_limit_headers_are_kept_and_respected():
     chat(client)
     assert client.last_rate_limits["openai/gpt-oss-20b"]["x-ratelimit-remaining-requests"] == "998"
     limiter = client.limiter("openai/gpt-oss-20b")
-    needed = limiter.calibrate(estimate_prompt_tokens(MESSAGES, TOOLS)) + 600
+    needed = limiter.calibrate(estimate_prompt_tokens(MESSAGES, TOOLS)) + 800
     chat(client)
     assert clock.sleeps == [pytest.approx(needed * 60 / 8000, abs=0.01)], "the prompt estimate plus all of max_tokens"
 

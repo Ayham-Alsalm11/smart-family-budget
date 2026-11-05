@@ -381,7 +381,7 @@ class GroqClient:
         max_retries: int = 3,
         max_retry_wait: float = MAX_RETRY_WAIT,
         reasoning_effort: str | None = "low",
-        max_tokens: int = 600,
+        max_tokens: int = 800,
         tool_mode: str = "native",
         tokens_per_minute: int = 8000,
         transport: httpx.BaseTransport | None = None,
