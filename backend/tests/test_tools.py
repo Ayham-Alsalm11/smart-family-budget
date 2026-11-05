@@ -1,3 +1,4 @@
+"""The tools through `dispatch`: arguments, error codes and results (§7.1)."""
 import json
 from datetime import timedelta
 
@@ -9,6 +10,8 @@ from app.db.models import Expense, PendingAction, utcnow
 from app.services import expenses
 from app.tools.dispatch import TOOLS, ToolDeps, dispatch
 from app.tools.schemas import TOOL_NAMES, TOOL_SCHEMAS
+
+from conftest import TODAY
 
 FOOD = "أكل وشرب"
 
@@ -112,6 +115,48 @@ def test_search_without_a_period_looks_at_the_last_3_months(session, manager_ctx
     run(session, manager_ctx, "search_expenses", fake_embedder, fake_store, query="صيدلية")
     assert fake_store.queries[-1]["where"] == {"$and": [{"date_key": {"$gte": 20260901}},
                                                         {"date_key": {"$lte": 20261130}}]}
+
+
+def add_for_search(session, ctx, embedder, store, days_ago, amount=1000):
+    return expenses.add_expense(session, ctx, amount=amount, category=FOOD, expense_date=TODAY - timedelta(days=days_ago),
+                                embedder=embedder, vector_store=store)["id"]
+
+
+def test_search_returns_five_candidates_even_for_limit_1(session, manager_ctx, fake_embedder, fake_store):
+    for days in range(7):
+        add_for_search(session, manager_ctx, fake_embedder, fake_store, days)
+    found = run(session, manager_ctx, "search_expenses", fake_embedder, fake_store, query="خبز", limit=1)
+    assert len(found.data["matches"]) == 5
+
+
+def test_search_returns_ten_candidates_at_most(session, manager_ctx, fake_embedder, fake_store):
+    for days in range(12):
+        add_for_search(session, manager_ctx, fake_embedder, fake_store, days)
+    found = run(session, manager_ctx, "search_expenses", fake_embedder, fake_store, query="خبز", limit=20)
+    assert len(found.data["matches"]) == 10
+
+
+def test_a_limit_between_the_bounds_is_kept(session, manager_ctx, fake_embedder, fake_store):
+    for days in range(9):
+        add_for_search(session, manager_ctx, fake_embedder, fake_store, days)
+    found = run(session, manager_ctx, "search_expenses", fake_embedder, fake_store, query="خبز", limit=7)
+    assert len(found.data["matches"]) == 7
+
+
+def test_search_results_are_newest_first_and_keep_their_distance(session, manager_ctx, fake_embedder, fake_store):
+    middle = add_for_search(session, manager_ctx, fake_embedder, fake_store, 5)
+    oldest = add_for_search(session, manager_ctx, fake_embedder, fake_store, 9)
+    first_today = add_for_search(session, manager_ctx, fake_embedder, fake_store, 0)
+    second_today = add_for_search(session, manager_ctx, fake_embedder, fake_store, 0)
+    matches = run(session, manager_ctx, "search_expenses", fake_embedder, fake_store, query="خبز").data["matches"]
+    assert [m["id"] for m in matches] == [second_today, first_today, middle, oldest], "by date, then by id"
+    assert [m["date"] for m in matches] == sorted((m["date"] for m in matches), reverse=True)
+    assert all(m["distance"] == 0.1 for m in matches)
+
+
+def test_search_description_says_newest_first():
+    schema = next(s for s in TOOL_SCHEMAS if s["function"]["name"] == "search_expenses")
+    assert "newest first" in schema["function"]["description"]
 
 
 def test_search_period_in_the_schema():

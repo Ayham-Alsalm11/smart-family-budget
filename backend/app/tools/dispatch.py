@@ -25,6 +25,8 @@ from app.tools.schemas import TOOL_NAMES
 log = logging.getLogger(__name__)
 
 SEARCH_DEFAULT_PERIOD = "last_3_months"
+SEARCH_MIN_CANDIDATES = 5
+SEARCH_MAX_CANDIDATES = 10
 
 # tool_log.status has no separate value for these codes (§4).
 _LOG_STATUS = {"missing_fields": "invalid_args", "not_available": "error"}
@@ -147,7 +149,9 @@ def _search_expenses(args: A.SearchExpenses, ctx: ToolContext, deps: ToolDeps) -
                       {"date_key": {"$lte": int(span.end.strftime("%Y%m%d"))}}]}
     try:
         vector = deps.embedder.embed(args.query)
-        hits = deps.vector_store.query("expenses", ctx, vector, n_results=args.limit, where=where)
+        # More than the model asked for: with limit=1 the closest meaning hid the newest match (scenario S4).
+        candidates = min(max(args.limit, SEARCH_MIN_CANDIDATES), SEARCH_MAX_CANDIDATES)
+        hits = deps.vector_store.query("expenses", ctx, vector, n_results=candidates, where=where)
     except Exception as exc:
         log.warning("search_expenses failed: %s", exc)
         raise ToolFailure("not_available", "Search by meaning is not available now; use list_expenses.") from exc
@@ -158,6 +162,8 @@ def _search_expenses(args: A.SearchExpenses, ctx: ToolContext, deps: ToolDeps) -
         except ServiceError:
             continue  # deleted since it was indexed, or outside the caller's scope
         matches.append({**_brief(expense, with_member=ctx.is_manager), "distance": round(hit["distance"], 3)})
+    # Edits and deletions take the newest match (§6.4), which a ranking by meaning does not put first.
+    matches.sort(key=lambda row: (row["date"], row["id"]), reverse=True)
     return {"matches": matches}
 
 
