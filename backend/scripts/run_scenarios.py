@@ -2,13 +2,18 @@
 
     cd backend
     .venv\\Scripts\\python -m scripts.run_scenarios [--today 2026-11-04] [--models main,small] [--only S1,S3]
+    .venv\\Scripts\\python -m scripts.run_scenarios --resume data\\measurements\\scenarios_<timestamp>.json
 
 Each scenario gets a new seed database and an in-process ChromaDB (never the development data), so that memory and
 expenses cannot leak from one scenario into the next. Setup expenses go in through the services, without the model.
-Results are saved after every turn to backend/data/measurements/scenarios_<timestamp>.json (untracked). The `checks`
-of each turn come from `expect` in dev_scenarios.json; `judgement` is left for the person reading the results.
-A short 429 is retried by the client; a retry-after over 60 s, or retries that fail, stop the run.
-These scenarios are not evaluation data.
+Results are saved after every turn to backend/data/measurements/scenarios_<timestamp>.json (untracked), and a scenario
+is marked `done` as soon as it ends. The `checks` of each turn come from `expect` in dev_scenarios.json; `judgement` is
+left for the person reading the results.
+
+A short 429 is retried by the client. A retry-after over 60 s (the daily quota), or retries that fail, stop the run
+cleanly: `stopped` in the file says why and where, with the error text and all the headers. --resume continues the same
+file from the first unfinished scenario, on a new database; its finished turns move to `abandoned`, so that the tokens
+they cost stay counted. These scenarios are not evaluation data.
 """
 import argparse
 import json
@@ -28,7 +33,7 @@ from app.agent.memory import memory_for_model, recent_messages
 from app.db import seed
 from app.db.models import Expense, Member
 from app.db.session import init_db, make_engine, make_session_factory
-from app.llm.client import GroqClient
+from app.llm.client import MAX_RETRY_WAIT, GroqClient
 from app.rag.embeddings import OllamaEmbedder
 from app.rag.vector_store import COLLECTIONS, ChromaVectorStore
 from app.services.expenses import add_expense, reindex_missing
@@ -52,7 +57,17 @@ class CachedEmbedder:
 
 
 class RateLimited(Exception):
-    pass
+    """The client gave up on a 429: the run ends here."""
+
+    def __init__(self, details: dict) -> None:
+        super().__init__(f"{details['reason']} in {details['scenario']}.{details['turn']}")
+        self.details = details
+
+
+def _stop_details(scenario: dict, number: int, call: dict) -> dict:
+    daily = call["retry_after"] is not None and call["retry_after"] > MAX_RETRY_WAIT
+    return {"reason": "daily_quota" if daily else "retries_failed", "scenario": scenario["id"], "turn": number,
+            "retry_after": call["retry_after"], "error": call["error"]}
 
 
 def _vector_store() -> ChromaVectorStore:
@@ -127,8 +142,12 @@ def _turn_record(number: int, text: str, turn: TurnResult, memory: list[dict], s
     return {
         "turn": number, "text": text, "reply": turn.reply, "ended_by": turn.ended_by,
         "tools": [{"tool": s.tool, "arguments": s.arguments, "status": s.status} for s in turn.steps],
-        "model_calls": len(turn.llm_calls), "tokens": turn.usage.as_dict(),
-        "first_call_prompt_tokens": turn.llm_calls[0]["tokens"]["prompt"] if turn.llm_calls else None,
+        "model_calls": sum(1 for c in turn.llm_calls if c["status"] in ("ok", "truncated")), "tokens": turn.usage.as_dict(),
+        "calls": [{"step": c["step"], "attempt": c["attempt"], "status": c["status"], "waited_ms": c["waited_ms"],
+                   "latency_ms": c["latency_ms"], **c["tokens"]} for c in turn.llm_calls],
+        "rate_limit_events": [{"step": c["step"], "attempt": c["attempt"], "retry_after": c["retry_after"],
+                               "error": c["error"]} for c in turn.llm_calls if c["status"] == "rate_limited"],
+        "first_call_prompt_tokens": next((c["tokens"]["prompt"] for c in turn.llm_calls if c["tokens"]["prompt"]), None),
         "memory_messages": len(memory), "repaired": turn.repaired, "first_reply": turn.first_reply,
         "first_ungrounded": turn.first_ungrounded, "ungrounded": turn.ungrounded,
         "waited_s": round(sum(c.get("waited_ms", 0) for c in turn.llm_calls) / 1000, 1), "seconds": seconds,
@@ -140,7 +159,7 @@ def _turn_record(number: int, text: str, turn: TurnResult, memory: list[dict], s
 def run_scenario(scenario: dict, result: dict, settings: Settings, client: GroqClient, model: str,
                  embedder: CachedEmbedder, today: date, save: Any) -> None:
     """Fills `result`, which is already in the report, so that a stopped scenario keeps its finished turns."""
-    result.update(who=scenario["who"], turns=[])
+    result.update(who=scenario["who"], done=False, turns=[])
     options = TurnOptions.from_settings(settings)
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
         engine = make_engine(f"sqlite:///{(Path(folder) / 'scenario.db').as_posix()}")
@@ -175,17 +194,27 @@ def run_scenario(scenario: dict, result: dict, settings: Settings, client: GroqC
                 print(f"  {scenario['id']}.{number} {mark}[{turn.ended_by}] {record['model_calls']} calls, "
                       f"{record['tokens']['total']} tok, repair {turn.repaired}: {tools}", flush=True)
                 if turn.llm_calls and turn.llm_calls[-1]["status"] == "rate_limited":
-                    raise RateLimited(f"429 in {scenario['id']}.{number}")
+                    raise RateLimited(_stop_details(scenario, number, turn.llm_calls[-1]))
         engine.dispose()
+    result["done"] = True
+    save()
 
 
-def _summary(scenarios: list[dict]) -> dict:
-    turns = [t for s in scenarios for t in s["turns"]]
+def _summary(run: dict) -> dict:
+    turns = [t for s in run["scenarios"] for t in s["turns"]]
+    abandoned = [t for s in run.get("abandoned", []) for t in s["turns"]]
+    calls = [c for t in turns + abandoned for c in t["calls"]]
     first = [t["first_call_prompt_tokens"] for t in turns if t["first_call_prompt_tokens"] and not t["memory_messages"]]
     later = [t["first_call_prompt_tokens"] for t in turns if t["first_call_prompt_tokens"] and t["memory_messages"]]
     return {
+        "scenarios_done": sum(1 for s in run["scenarios"] if s["done"]),
         "turns": len(turns), "model_calls": sum(t["model_calls"] for t in turns),
         "tokens": sum(t["tokens"]["total"] for t in turns),
+        "tokens_in_abandoned_turns": sum(t["tokens"]["total"] for t in abandoned),
+        "waited_s": round(sum(c["waited_ms"] for c in calls) / 1000, 1),
+        "rate_limited_attempts": sum(1 for c in calls if c["status"] == "rate_limited"),
+        "truncated_replies": sum(1 for c in calls if c["status"] == "truncated"),
+        "largest_completion": max((c["completion"] for c in calls), default=0),
         "prompt_tokens_first_call_without_memory": round(sum(first) / len(first)) if first else None,
         "prompt_tokens_first_call_with_memory": round(sum(later) / len(later)) if later else None,
         "turns_with_memory": len(later), "turns_without_the_model": sum(1 for t in turns if t["model_calls"] == 0),
@@ -202,17 +231,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--today", type=date.fromisoformat, default=date(2026, 11, 4))
     parser.add_argument("--models", default="main,small")
     parser.add_argument("--only", help="comma-separated scenario ids")
+    parser.add_argument("--resume", type=Path, help="a results file to continue from its first unfinished scenario")
     args = parser.parse_args(argv)
 
+    if args.resume:
+        path = args.resume
+        report: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+        if "stopped" in report:
+            report.setdefault("earlier_stops", []).append(report.pop("stopped"))
+    else:
+        folder = BACKEND_DIR / "data" / "measurements"
+        folder.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = folder / f"scenarios_{stamp}.json"
+        report = {"started": stamp, "today": args.today.isoformat(), "reasoning_effort": "low",
+                  "models": args.models.split(","), "only": args.only.split(",") if args.only else None, "runs": {}}
+    today = date.fromisoformat(report["today"])
     scenarios = json.loads(SCENARIOS.read_text(encoding="utf-8"))["scenarios"]
-    if args.only:
-        scenarios = [s for s in scenarios if s["id"] in args.only.split(",")]
-    settings = get_settings().model_copy(update={"agent_today": args.today, "reasoning_effort": "low"})
-    folder = BACKEND_DIR / "data" / "measurements"
-    folder.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    path = folder / f"scenarios_{stamp}.json"
-    report: dict[str, Any] = {"started": stamp, "today": args.today.isoformat(), "reasoning_effort": "low", "runs": {}}
+    if report["only"]:
+        scenarios = [s for s in scenarios if s["id"] in report["only"]]
+    settings = get_settings().model_copy(update={"agent_today": today, "reasoning_effort": "low"})
 
     def save() -> None:
         path.write_text(json.dumps(report, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
@@ -225,28 +263,37 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     embedder = CachedEmbedder(ollama)
 
-    code = 0
+    code, current = 0, ""
     try:
-        for name in args.models.split(","):
+        for name in report["models"]:
             model = settings.model_id(name)
-            run = {"model": model, "scenarios": []}
-            report["runs"][name] = run
-            print(f"== {name}: {model}", flush=True)
+            run = report["runs"].setdefault(name, {"model": model, "scenarios": []})
+            unfinished = [s for s in run["scenarios"] if not s["done"]]
+            run["scenarios"] = [s for s in run["scenarios"] if s["done"]]
+            if unfinished:
+                run.setdefault("abandoned", []).extend(unfinished)
+            finished = {s["id"] for s in run["scenarios"]}
+            current = name
+            print(f"== {name}: {model}, {len(finished)} of {len(scenarios)} already done", flush=True)
             for scenario in scenarios:
+                if scenario["id"] in finished:
+                    continue
                 result = {"id": scenario["id"]}
                 run["scenarios"].append(result)
-                run_scenario(scenario, result, settings, client, model, embedder, args.today, save)
-                run["summary"] = _summary(run["scenarios"])
+                run_scenario(scenario, result, settings, client, model, embedder, today, save)
+                run["summary"] = _summary(run)
                 run["rate_limits"] = client.last_rate_limits.get(model)
                 save()
     except RateLimited as exc:
-        report["stopped"] = str(exc)
-        print(f"STOPPED: {exc}", flush=True)
+        report["stopped"] = {**exc.details, "model": current, "rate_limits": client.last_rate_limits.get(
+            settings.model_id(current))}
+        print(f"STOPPED ({exc}) on {current}: retry-after {exc.details['retry_after']}. Nothing is retried now.", flush=True)
+        print(f"To continue: python -m scripts.run_scenarios --resume {path}", flush=True)
         code = 2
     finally:
-        for name, run in report["runs"].items():
-            run["summary"] = _summary(run["scenarios"])
-            run["rate_limits"] = client.last_rate_limits.get(run["model"])
+        for run in report["runs"].values():
+            run["summary"] = _summary(run)
+            run["rate_limits"] = client.last_rate_limits.get(run["model"]) or run.get("rate_limits")
         save()
         client.close()
     print(f"saved {path}", flush=True)
