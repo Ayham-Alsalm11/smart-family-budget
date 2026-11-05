@@ -11,9 +11,11 @@ from app import cli
 from app.agent import confirm
 from app.agent.confirm import classify, normalise, preview_text
 from app.agent.loop import TurnOptions, run_turn
+from app.agent.memory import known_expense_ids
 from app.db.models import Expense, LlmCall, Message, PendingAction, ToolLog, utcnow
 from app.services import expenses, pending
 from app.services.errors import ConflictError
+from app.tools.dispatch import UNKNOWN_EXPENSE_ID
 from app.tools.schemas import TOOL_SCHEMAS
 
 from api_support import join, make_api, register
@@ -72,11 +74,11 @@ def turn(session, ctx, text, responses=(), **kwargs):
 
 
 def ask_delete(session, ctx, expense_id):
-    return turn(session, ctx, "امسحه", [respond(call("delete_expense", expense_id=expense_id))])
+    return turn(session, ctx, f"امسح #{expense_id}", [respond(call("delete_expense", expense_id=expense_id))])
 
 
 def ask_edit(session, ctx, expense_id, **changes):
-    return turn(session, ctx, "عدّله", [respond(call("edit_expense", expense_id=expense_id, changes=changes))])
+    return turn(session, ctx, f"عدّل #{expense_id}", [respond(call("edit_expense", expense_id=expense_id, changes=changes))])
 
 
 def add(session, ctx, amount=5000, category=FUEL, description="تعبئة"):
@@ -285,7 +287,7 @@ def test_a_new_action_leaves_other_members_alone(session, member_ctx, other_memb
 def test_a_refused_request_keeps_the_older_action(session, member_ctx, other_member_ctx):
     mine = pending.request_change(session, member_ctx, "delete_expense", add(session, member_ctx))
     theirs = add(session, other_member_ctx)
-    result, _ = turn(session, member_ctx, "امسحه", [respond(call("delete_expense", expense_id=theirs)),
+    result, _ = turn(session, member_ctx, f"امسح #{theirs}", [respond(call("delete_expense", expense_id=theirs)),
                                                     respond(content="ما فيني")])
     assert result.pending_action is None and status(session, mine["confirmation_id"]) == "pending"
 
@@ -346,7 +348,7 @@ def test_the_grounding_check_does_not_touch_server_text(session, member_ctx):
 
 def test_calls_after_the_confirmation_in_the_same_step_do_not_run(session, member_ctx):
     first, second = add(session, member_ctx), add(session, member_ctx)
-    done, _ = turn(session, member_ctx, "امسحهن", [
+    done, _ = turn(session, member_ctx, f"امسح #{first} و #{second}", [
         respond(call("delete_expense", expense_id=first), call("delete_expense", expense_id=second))])
     assert len(done.steps) == 1 and done.pending_action["expense"]["id"] == first
     assert len(session.scalars(select(PendingAction)).all()) == 1
@@ -354,10 +356,149 @@ def test_calls_after_the_confirmation_in_the_same_step_do_not_run(session, membe
 
 def test_earlier_calls_in_the_step_still_ran(session, member_ctx):
     expense = add(session, member_ctx)
-    done, _ = turn(session, member_ctx, "x", [
+    done, _ = turn(session, member_ctx, f"#{expense}", [
         respond(call("add_expense", amount=10, category=FOOD), call("delete_expense", expense_id=expense))])
     assert [s.status for s in done.steps] == ["ok", "confirmation_required"]
     assert len(session.scalars(select(Expense)).all()) == 2
+
+
+# ---------- the model cannot guess an expense id ----------
+
+def unknown_id_turn(session, ctx, text, expense_id, tool="delete_expense", **extra):
+    """The model calls the tool with `expense_id`, is corrected if refused, and ends with a text reply."""
+    return turn(session, ctx, text, [respond(call(tool, expense_id=expense_id, **extra)), respond(content="لازم دوّر")])
+
+
+@pytest.mark.parametrize("tool, extra", [("delete_expense", {}), ("edit_expense", {"changes": {"amount": 6000}})])
+def test_an_unknown_id_is_refused_with_a_way_forward(session, member_ctx, tool, extra):
+    expense = add(session, member_ctx)
+    done, llm = unknown_id_turn(session, member_ctx, "امسح آخر مصروف", expense, tool, **extra)
+    assert done.steps[0].status == "invalid_args" and done.ended_by == "reply" and done.pending_action is None
+    assert done.steps[0].result["error"]["message"] == UNKNOWN_EXPENSE_ID
+    assert UNKNOWN_EXPENSE_ID in llm.requests[1][-1]["content"], "the model reads how to recover"
+    assert session.scalars(select(PendingAction)).all() == []
+    assert last_log(session).status == "invalid_args"
+
+
+def test_an_id_from_a_list_in_the_same_turn_is_accepted(session, member_ctx):
+    expense = add(session, member_ctx)
+    done, _ = turn(session, member_ctx, "امسح آخر مصروف", [
+        respond(call("list_expenses", limit=1)), respond(call("delete_expense", expense_id=expense))])
+    assert done.ended_by == "confirmation" and done.pending_action["expense"]["id"] == expense
+
+
+def test_an_id_from_an_earlier_tool_in_the_same_step_is_accepted(session, member_ctx):
+    expense = add(session, member_ctx)
+    done, _ = turn(session, member_ctx, "امسح آخر مصروف", [
+        respond(call("list_expenses", limit=1), call("delete_expense", expense_id=expense))])
+    assert [s.status for s in done.steps] == ["ok", "confirmation_required"]
+
+
+def test_a_later_tool_in_the_same_step_does_not_count(session, member_ctx):
+    expense = add(session, member_ctx)
+    done, _ = turn(session, member_ctx, "امسح آخر مصروف", [
+        respond(call("delete_expense", expense_id=expense), call("list_expenses", limit=1)), respond(content="تمام")])
+    assert [s.status for s in done.steps] == ["invalid_args", "ok"]
+
+
+def test_an_id_from_a_search_in_the_same_turn_is_accepted(session, member_ctx):
+    embedder, vectors = FakeEmbedder(), FakeVectorStore()
+    expense = expenses.add_expense(session, member_ctx, amount=5, category=FOOD, expense_date=TODAY, embedder=embedder,
+                                   vector_store=vectors)["id"]
+    done, _ = turn(session, member_ctx, "امسح الخبز", [
+        respond(call("search_expenses", query="خبز")), respond(call("delete_expense", expense_id=expense))],
+        embedder=embedder, vector_store=vectors)
+    assert done.ended_by == "confirmation"
+
+
+def test_an_id_added_in_the_same_turn_is_accepted(session, member_ctx):
+    done, _ = turn(session, member_ctx, "x", [
+        respond(call("add_expense", amount=10, category=FOOD)), respond(call("delete_expense", expense_id=1))])
+    assert done.ended_by == "confirmation"
+
+
+def test_an_id_from_the_memory_is_accepted(session, member_ctx):
+    ids = [add(session, member_ctx) for _ in range(3)]
+    turn(session, member_ctx, "شو آخر 3؟", [respond(call("list_expenses", limit=3)), respond(content="هول")])
+    done, _ = ask_turn_without_id(session, member_ctx, ids[1])
+    assert done.ended_by == "confirmation" and done.pending_action["expense"]["id"] == ids[1]
+
+
+def ask_turn_without_id(session, ctx, expense_id, **kwargs):
+    return turn(session, ctx, "امسح التاني", [respond(call("delete_expense", expense_id=expense_id)),
+                                              respond(content="لازم دوّر")], **kwargs)
+
+
+def test_only_messages_really_sent_count(session, member_ctx):
+    """The token ceiling drops the oldest messages; an id only they carried is no longer known."""
+    expense = add(session, member_ctx)
+    turn(session, member_ctx, "شو آخر مصروف؟", [respond(call("list_expenses", limit=1)), respond(content="هاد")])
+    for n in range(3):
+        turn(session, member_ctx, f"{n} " + "كلام طويل " * 40, [respond(content="تمام")])
+    done, _ = ask_turn_without_id(session, member_ctx, expense, options=TurnOptions(memory_max_tokens=300))
+    assert done.steps[0].status == "invalid_args"
+
+
+def test_with_memory_off_an_earlier_list_does_not_count(session, member_ctx):
+    expense = add(session, member_ctx)
+    turn(session, member_ctx, "شو آخر مصروف؟", [respond(call("list_expenses", limit=1)), respond(content="هاد")])
+    done, _ = ask_turn_without_id(session, member_ctx, expense, options=TurnOptions(memory_messages=0))
+    assert done.steps[0].status == "invalid_args"
+
+
+def test_with_memory_off_the_same_turn_and_the_message_still_count(session, member_ctx):
+    options = TurnOptions(memory_messages=0)
+    first, second = add(session, member_ctx), add(session, member_ctx)
+    done, _ = turn(session, member_ctx, f"امسح #{first}", [respond(call("delete_expense", expense_id=first))], options=options)
+    assert done.ended_by == "confirmation"
+    done, _ = turn(session, member_ctx, "امسح آخر مصروف", [
+        respond(call("list_expenses", limit=1)), respond(call("delete_expense", expense_id=second))], options=options)
+    assert done.ended_by == "confirmation"
+
+
+def test_ids_in_a_reply_text_do_not_count(session, member_ctx):
+    """Only tool_summary is trusted: the model could write any number in its reply."""
+    expense = add(session, member_ctx)
+    turn(session, member_ctx, "مرحبا", [respond(content=f"أهلا #{expense}")], options=TurnOptions(grounding_repair=False))
+    done, _ = ask_turn_without_id(session, member_ctx, expense)
+    assert done.steps[0].status == "invalid_args"
+
+
+def test_another_members_memory_does_not_count(session, member_ctx, other_member_ctx):
+    theirs = add(session, other_member_ctx)
+    turn(session, other_member_ctx, "شو آخر مصروف؟", [respond(call("list_expenses", limit=1)), respond(content="هاد")])
+    done, _ = ask_turn_without_id(session, member_ctx, theirs)
+    assert done.steps[0].status == "invalid_args"
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("امسح #65", {65}), ("امسح المصروف رقم 65", {65}), ("رقم٦٥", {65}), ("#٦٥", {65}), ("امسح # 65", {65}),
+    ("delete id 65", {65}), ("ID: 65", {65}), ("#3 و #4", {3, 4}),
+    ("امسح 65", set()), ("امسح مصروف 5000", set()), ("دفعت 5000", set()), ("idea 5", set()), ("", set()),
+])
+def test_ids_in_the_users_words(text, expected):
+    assert known_expense_ids([], [], text) == expected
+
+
+def test_a_known_id_still_needs_permission(session, member_ctx, other_member_ctx):
+    theirs = add(session, other_member_ctx)
+    done, _ = turn(session, member_ctx, f"امسح #{theirs}", [respond(call("delete_expense", expense_id=theirs)),
+                                                            respond(content="ما فيني")])
+    assert done.steps[0].status == "forbidden"
+
+
+def test_direct_paths_do_not_need_a_known_id(tmp_path, monkeypatch):
+    """PATCH, DELETE and the buttons are a person's own act on a row they can see."""
+    with make_api(tmp_path, monkeypatch, llm=FakeLLM([])) as api:
+        manager = register(api, "sami")
+        with api.app.state.session_factory() as db:
+            first = expenses.add_expense(db, manager.ctx, amount=1000, category=FUEL)["id"]
+            second = expenses.add_expense(db, manager.ctx, amount=2000, category=FUEL)["id"]
+            third = expenses.add_expense(db, manager.ctx, amount=3000, category=FUEL)["id"]
+            action = pending.request_change(db, manager.ctx, "delete_expense", third)["confirmation_id"]
+        assert api.patch(f"/expenses/{first}", json={"amount": 1}, headers=manager.headers).status_code == 200
+        assert api.delete(f"/expenses/{second}", headers=manager.headers).status_code == 200
+        assert api.post(f"/actions/{action}/confirm", headers=manager.headers).status_code == 200
 
 
 def test_memory_off_still_confirms(session, member_ctx):
@@ -379,7 +520,7 @@ def test_chat_api_confirms_without_the_model(tmp_path, monkeypatch):
         with api.app.state.session_factory() as db:
             expense = expenses.add_expense(db, member.ctx, amount=5000, category=FUEL)["id"]
         llm.responses = [respond(call("delete_expense", expense_id=expense))]
-        asked = api.post("/chat", json={"message": "امسحه"}, headers=member.headers).json()
+        asked = api.post("/chat", json={"message": f"امسح #{expense}"}, headers=member.headers).json()
         assert asked["pending_action"]["expense"]["id"] == expense and "«اي»" in asked["reply"]
         assert len(llm.requests) == 1
 
@@ -408,7 +549,7 @@ def test_terminal_remembers_and_confirms_with_yes(tmp_path):
     text, llm = run_cli(tmp_path, [
         respond(call("list_expenses", limit=1)), respond(content="هاد آخر مصروف"),
         respond(call("delete_expense", expense_id=1)),
-    ], ["شو آخر مصروف؟", "امسحه", "اي"])
+    ], ["شو آخر مصروف؟", "امسح المصروف رقم 1", "اي"])
     assert len(llm.requests) == 3, "the last line never reached the model"
     assert llm.requests[2][1]["content"] == "شو آخر مصروف؟" and "list_expenses → #" in llm.requests[2][2]["content"]
     assert "رد بـ «اي» للتأكيد" in text and "[confirmation]" in text
@@ -416,5 +557,5 @@ def test_terminal_remembers_and_confirms_with_yes(tmp_path):
 
 
 def test_terminal_cancels_with_no(tmp_path):
-    text, llm = run_cli(tmp_path, [respond(call("delete_expense", expense_id=1))], ["امسح المصروف", "لا"])
+    text, llm = run_cli(tmp_path, [respond(call("delete_expense", expense_id=1))], ["امسح #1", "لا"])
     assert len(llm.requests) == 1 and "ميزان: تمام، ما غيّرت شي." in text and "[cancelled]" in text

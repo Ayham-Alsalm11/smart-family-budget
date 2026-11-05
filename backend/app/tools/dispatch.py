@@ -24,6 +24,7 @@ from app.tools.schemas import TOOL_NAMES
 
 log = logging.getLogger(__name__)
 
+UNKNOWN_EXPENSE_ID = "Unknown expense id: find it first with list_expenses or search_expenses."
 SEARCH_DEFAULT_PERIOD = "last_3_months"
 SEARCH_MIN_CANDIDATES = 5
 SEARCH_MAX_CANDIDATES = 10
@@ -38,6 +39,7 @@ class ToolDeps:
     source_text: str = ""  # the user's message, stored with expenses the agent adds
     embedder: Any = None
     vector_store: Any = None
+    known_expense_ids: set[int] | None = None  # set by the agent loop; None means no check
 
 
 @dataclass
@@ -106,13 +108,22 @@ def _add_expense(args: A.AddExpense, ctx: ToolContext, deps: ToolDeps) -> dict:
     return {"expense": {**_brief(added), "amount_base": added["amount_base"]}, "alerts": budgets.budget_alerts([row])}
 
 
+def _require_known_id(expense_id: int, deps: ToolDeps) -> None:
+    """The model must not guess: a guessed id can exist, and the preview then offers to change an unrelated expense
+    (§6.5, scenario S5, where the rent was offered for deletion)."""
+    if deps.known_expense_ids is not None and expense_id not in deps.known_expense_ids:
+        raise ToolFailure("invalid_args", UNKNOWN_EXPENSE_ID)
+
+
 def _edit_expense(args: A.EditExpense, ctx: ToolContext, deps: ToolDeps) -> dict:
+    _require_known_id(args.expense_id, deps)
     preview = pending.request_change(deps.session, ctx, "edit_expense", args.expense_id,
                                      args.changes.model_dump(exclude_none=True))
     raise ToolFailure("confirmation_required", "Show the preview and ask the user to confirm.", **preview)
 
 
 def _delete_expense(args: A.DeleteExpense, ctx: ToolContext, deps: ToolDeps) -> dict:
+    _require_known_id(args.expense_id, deps)
     preview = pending.request_change(deps.session, ctx, "delete_expense", args.expense_id)
     raise ToolFailure("confirmation_required", "Show the preview and ask the user to confirm.", **preview)
 

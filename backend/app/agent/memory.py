@@ -2,7 +2,9 @@
 
 The model sees the member's own recent messages, in time order, between the system prompt and the new message.
 Assistant messages carry their `tool_summary` in brackets, so that "امسح التاني" can be resolved to an expense id.
+The ids that reach the model this way are also what `known_expense_ids` accepts for an edit or a deletion (§6.5).
 """
+import re
 from datetime import timedelta
 
 from sqlalchemy import select
@@ -14,6 +16,9 @@ from app.llm.client import estimate_prompt_tokens
 
 MAX_REPLY_CHARS = 300
 LINK = " ← "
+_SUMMARY_ID = re.compile(r"#(\d+)")
+# Only a marked number is an id: a bare one in "امسح مصروف 5000" is an amount.
+_NAMED_ID = re.compile(r"(?:#|رقم|\bid\b)\s*:?\s*(\d+)", re.IGNORECASE)
 
 
 def recent_messages(session: Session, ctx: ToolContext, count: int, hours: int) -> list[Message]:
@@ -46,6 +51,14 @@ def memory_for_model(history: list[Message], max_tokens: int) -> list[dict]:
     while chat and estimate_prompt_tokens(chat) > max_tokens:
         chat.pop(0)
     return chat
+
+
+def known_expense_ids(history: list[Message], memory: list[dict], message: str) -> set[int]:
+    """The ids the conversation has shown so far: in the summaries of the messages actually sent, and in the user's
+    own words. `memory` may be shorter than `history`, because the token ceiling drops the oldest messages."""
+    sent = history[-len(memory):] if memory else []
+    ids = {int(found) for row in sent for found in _SUMMARY_ID.findall(row.tool_summary or "")}
+    return ids | {int(found) for found in _NAMED_ID.findall(message)}
 
 
 def linked_source_text(history: list[Message], message: str) -> str:

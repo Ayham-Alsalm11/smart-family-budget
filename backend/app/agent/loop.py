@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from app.agent.confirm import ConfirmationResult, answer_pending, preview_text, waiting_for_an_answer
 from app.agent.context import ToolContext
 from app.agent.grounding import ungrounded_numbers
-from app.agent.memory import linked_source_text, memory_for_model, recent_messages
+from app.agent.memory import known_expense_ids, linked_source_text, memory_for_model, recent_messages
 from app.agent.prompts import build_system_prompt
 from app.db.models import Family, LlmCall, Message, ToolLog
 from app.llm.client import Attempt, LLMError, LLMToolValidationError, LLMTruncatedError, Usage
@@ -153,12 +153,13 @@ def run_turn(
         if done is not None:
             return _finish_without_model(session, ctx, done)
 
+    memory = memory_for_model(history, options.memory_max_tokens)
     deps = ToolDeps(session, source_text=linked_source_text(history, message), embedder=embedder,
-                    vector_store=vector_store)
+                    vector_store=vector_store, known_expense_ids=known_expense_ids(history, memory, message))
 
     messages: list[dict] = [
         {"role": "system", "content": build_system_prompt(ctx.today, family.base_currency, corrections)},
-        *memory_for_model(history, options.memory_max_tokens),
+        *memory,
         {"role": "user", "content": message},
     ]
     turn = TurnResult(reply="", ended_by="", message_id=user_row.id)
@@ -236,6 +237,7 @@ def run_turn(
                 latency_ms=latency_ms, model=model,
             ))
             turn.steps.append(StepRecord(step, call.name, arguments, result.code, latency_ms, stored))
+            deps.known_expense_ids.update(_expense_ids(turn.steps[-1]))
             tool_texts.append(text)
             messages.append({"role": "tool", "tool_call_id": call.id, "content": text})
 

@@ -1,3 +1,4 @@
+"""The ReAct loop with a scripted model: steps, limits, logging and tool rejection (§6.1, §6.2)."""
 import httpx
 from sqlalchemy import select
 
@@ -181,7 +182,7 @@ def test_the_text_and_headers_of_a_429_reach_llm_calls(session, member_ctx):
 
 def test_pending_action_and_alerts_reach_the_turn(session, member_ctx):
     mine = expenses.add_expense(session, member_ctx, amount=79000, category=FOOD)
-    turn, _ = run(session, member_ctx, "x", [
+    turn, _ = run(session, member_ctx, f"امسح #{mine['id']}", [
         respond(call("add_expense", amount=2000, category=FOOD),
                 call("delete_expense", expense_id=mine["id"])),
         respond(content="بدك امسحه؟"),

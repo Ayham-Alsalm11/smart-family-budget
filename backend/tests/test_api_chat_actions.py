@@ -173,7 +173,7 @@ def test_chat_returns_the_pending_action_and_the_button_runs_it(api, llm):
     manager = register(api, "sami")
     expense = spend(api, manager, 5000, "بنزين ومواصلات")
     llm.responses = [respond(call("delete_expense", expense_id=expense)), respond(content="أكيد بدك تمسحه؟")]
-    body = api.post("/chat", json={"message": "امسح البنزين"}, headers=manager.headers).json()
+    body = api.post("/chat", json={"message": f"امسح #{expense}"}, headers=manager.headers).json()
     pending = body["pending_action"]
     assert pending["action"] == "delete_expense" and pending["expense"]["id"] == expense
     assert expense_row(api, expense) is not None, "nothing runs before the confirmation"
