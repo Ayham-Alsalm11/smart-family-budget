@@ -8,8 +8,9 @@ import pytest
 
 from app.llm.client import (
     GroqClient, LLMRateLimitError, LLMRequestError, LLMServerError, LLMTimeoutError, LLMToolValidationError,
-    RateLimiter, Usage, estimate_tokens, parse_duration,
+    LLMTruncatedError, RateLimiter, Usage, estimate_prompt_tokens, parse_duration,
 )
+from app.settings import Settings
 
 TOOL_CALL = {"id": "c1", "type": "function",
              "function": {"name": "add_expense", "arguments": '{"amount": 5000, "category": "بنزين ومواصلات"}'}}
@@ -64,7 +65,7 @@ def test_success_payload_and_parsing():
     result = chat(client, attempts)
     body = json.loads(sent[0].content)
     assert body["reasoning_effort"] == "low" and body["temperature"] == 0 and body["tool_choice"] == "auto"
-    assert body["max_tokens"] == 1024 and body["tools"] == TOOLS
+    assert body["max_tokens"] == 600 and body["tools"] == TOOLS
     assert sent[0].headers["authorization"] == "Bearer test-key"
     call = result.tool_calls[0]
     assert (call.name, call.arguments) == ("add_expense", {"amount": 5000, "category": "بنزين ومواصلات"})
@@ -143,11 +144,81 @@ def test_long_retry_after_stops_at_once():
     assert len(sent) == 1 and clock.sleeps == []
 
 
-def test_rate_limit_retries_can_be_disabled():
-    client, sent, _ = make([httpx.Response(429, headers={"retry-after": "1"})], max_rate_limit_retries=0)
-    with pytest.raises(LLMRateLimitError):
+def test_short_429s_are_retried_up_to_three_times():
+    short = httpx.Response(429, headers={"retry-after": "1"}, json={"error": {"message": "slow"}})
+    client, sent, clock = make([short, short, short, ok()])
+    attempts = []
+    result = chat(client, attempts)
+    assert result.content is None and len(sent) == 4 and clock.sleeps == [1.0, 1.0, 1.0]
+    assert [a.status for a in attempts] == ["rate_limited"] * 3 + ["ok"]
+
+
+def test_stops_after_the_retries_fail():
+    short = httpx.Response(429, headers={"retry-after": "1"})
+    client, sent, clock = make([short] * 4)
+    with pytest.raises(LLMRateLimitError) as caught:
         chat(client)
-    assert len(sent) == 1
+    assert len(sent) == 4 and clock.sleeps == [1.0] * 3 and caught.value.retry_after == 1
+
+
+@pytest.mark.parametrize("seconds, requests", [("60", 2), ("61", 1)])
+def test_a_minute_is_the_longest_wait(seconds, requests):
+    client, sent, clock = make([httpx.Response(429, headers={"retry-after": seconds}), ok()][:requests])
+    attempts = []
+    if requests == 2:
+        chat(client, attempts)
+        assert clock.sleeps == [60.0]
+    else:
+        with pytest.raises(LLMRateLimitError) as caught:
+            chat(client, attempts)
+        assert clock.sleeps == [] and caught.value.retry_after == 61
+    assert len(sent) == requests and attempts[0].retry_after == int(seconds)
+
+
+def test_a_429_keeps_its_text_and_all_headers_but_never_the_key():
+    response = httpx.Response(429, json={"error": {"code": "rate_limit_exceeded", "message": "Limit 8000, Used 7900"}},
+                              headers={"retry-after": "3600", "x-ratelimit-remaining-tokens": "12", "x-request-id": "r1",
+                                       "set-cookie": "private=1"})
+    client, _, _ = make([response])
+    attempts = []
+    with pytest.raises(LLMRateLimitError):
+        chat(client, attempts)
+    text = attempts[0].error
+    assert "rate_limit_exceeded" in text and "Limit 8000, Used 7900" in text
+    assert '"x-ratelimit-remaining-tokens": "12"' in text and '"x-request-id": "r1"' in text
+    assert '"retry-after": "3600"' in text
+    assert "private=1" not in text and "test-key" not in text
+
+
+def test_a_429_without_retry_after_backs_off():
+    client, sent, clock = make([httpx.Response(429), ok()])
+    chat(client)
+    assert clock.sleeps == [1.0] and len(sent) == 2
+
+
+def truncated(usage=USAGE):
+    return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "نص مقطو"},
+                                                  "finish_reason": "length"}], "usage": usage})
+
+
+def test_a_reply_cut_by_max_tokens_is_a_clear_error():
+    client, sent, clock = make([truncated()])
+    attempts = []
+    with pytest.raises(LLMTruncatedError, match="max_tokens=600") as caught:
+        chat(client, attempts)
+    assert len(sent) == 1 and clock.sleeps == [], "the same request would be cut again"
+    assert [(a.status, a.http_status) for a in attempts] == [("truncated", 200)]
+    assert attempts[0].usage.completion_tokens == 50 and caught.value.usage.prompt_tokens == 200
+
+
+def test_a_finished_reply_is_not_an_error():
+    body = {"choices": [{"message": {"role": "assistant", "content": "تم"}, "finish_reason": "stop"}], "usage": USAGE}
+    client, _, _ = make([httpx.Response(200, json=body)])
+    assert chat(client).finish_reason == "stop"
+
+
+def test_max_tokens_default_is_600():
+    assert Settings(_env_file=None).llm_max_tokens == 600
 
 
 def test_invalid_tool_arguments_are_reported_not_raised():
@@ -165,9 +236,16 @@ def test_rate_limit_headers_are_kept_and_respected():
     chat(client)
     assert client.last_rate_limits["openai/gpt-oss-20b"]["x-ratelimit-remaining-requests"] == "998"
     limiter = client.limiter("openai/gpt-oss-20b")
-    expected = limiter.calibrate(estimate_tokens({"messages": MESSAGES, "tools": TOOLS})) * 60 / 8000
+    needed = limiter.calibrate(estimate_prompt_tokens(MESSAGES, TOOLS)) + 600
     chat(client)
-    assert clock.sleeps == [pytest.approx(expected, abs=0.01)], "waits only for the missing tokens to refill"
+    assert clock.sleeps == [pytest.approx(needed * 60 / 8000, abs=0.01)], "the prompt estimate plus all of max_tokens"
+
+
+def test_calibration_follows_the_prompt_not_the_completion():
+    client, _, _ = make([ok(), ok()])
+    chat(client)
+    limiter = client.limiter("openai/gpt-oss-20b")
+    assert limiter.ratio == pytest.approx(200 / estimate_prompt_tokens(MESSAGES, TOOLS))
 
 
 def test_limiter_calibrates_on_actual_usage():
@@ -269,14 +347,43 @@ def test_simulated_groq_bucket_no_429_and_little_waiting():
                                                        "x-ratelimit-remaining-tokens": str(int(state["bucket"]))})
 
     client = GroqClient("k", transport=httpx.MockTransport(handler), clock=clock, sleep=clock.sleep,
-                        jitter=lambda: 0.0, max_rate_limit_retries=0)
+                        jitter=lambda: 0.0)
     messages = [{"role": "system", "content": "x" * 8100}, {"role": "user", "content": "مرحبا"}]
-    assert estimate_tokens({"messages": messages}) > 2900
+    assert estimate_prompt_tokens(messages) > 2600
     for _ in range(20):
         client.chat("m", messages)
     assert state["rejected"] == 0
     minimum = (20 * actual - 8000) * 60 / 8000  # seconds the bucket needs to refill, whatever the client does
     assert minimum <= sum(clock.sleeps) <= minimum * 1.2
+
+
+def test_a_server_that_holds_max_tokens_never_rejects():
+    """The likely cause of the 429 in step 6: Groq needs prompt + max_tokens to be free, then charges what was used."""
+    clock = FakeClock()
+    state = {"bucket": 8000.0, "at": clock.now, "rejected": 0}
+
+    def handler(request):
+        state["bucket"] = min(8000.0, state["bucket"] + (clock.now - state["at"]) * 8000 / 60)
+        state["at"] = clock.now
+        body = json.loads(request.content)
+        if state["bucket"] < 1850 + body["max_tokens"]:
+            state["rejected"] += 1
+            return httpx.Response(429, headers={"retry-after": "1", "x-ratelimit-limit-tokens": "8000",
+                                                "x-ratelimit-remaining-tokens": str(int(state["bucket"]))})
+        state["bucket"] -= 1900
+        reply = {"choices": [{"message": {"role": "assistant", "content": "تمام"}}],
+                 "usage": {"prompt_tokens": 1850, "completion_tokens": 50}}
+        return httpx.Response(200, json=reply, headers={"x-ratelimit-limit-tokens": "8000",
+                                                        "x-ratelimit-remaining-tokens": str(int(state["bucket"]))})
+
+    client = GroqClient("k", transport=httpx.MockTransport(handler), clock=clock, sleep=clock.sleep,
+                        jitter=lambda: 0.0)
+    messages = [{"role": "system", "content": "x" * 5400}, {"role": "user", "content": "مرحبا"}]
+    client.chat("m", messages)  # the first call teaches the limiter how large the prompt really is
+    state["rejected"] = 0
+    for _ in range(12):
+        client.chat("m", messages)
+    assert state["rejected"] == 0
 
 
 def test_json_fallback_mode():

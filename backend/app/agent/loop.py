@@ -20,13 +20,14 @@ from app.agent.grounding import ungrounded_numbers
 from app.agent.memory import linked_source_text, memory_for_model, recent_messages
 from app.agent.prompts import build_system_prompt
 from app.db.models import Family, LlmCall, Message, ToolLog
-from app.llm.client import Attempt, LLMError, LLMToolValidationError, Usage
+from app.llm.client import Attempt, LLMError, LLMToolValidationError, LLMTruncatedError, Usage
 from app.tools.dispatch import ToolDeps, dispatch
 from app.tools.schemas import TOOL_SCHEMAS
 
 REPLY_STEP_LIMIT = "عذراً، ما قدرت كمّل هالطلب. فيك تكتبه بشكل أبسط؟"
 REPLY_LLM_ERROR = "عذراً، في مشكلة بالاتصال هلق. جرّب كمان شوي."
 REPLY_EMPTY = "عذراً، ما فهمت عليك. فيك توضّح أكتر؟"
+REPLY_TRUNCATED = "عذراً، الرد طلع طويل وانقطع. فيك تطلبه بشكل أقصر؟"
 REPLY_TOOL_REJECTED = "عذراً، ما قدرت نفّذ طلبك بالشكل الصحيح. فيك تكتبه بطريقة أوضح؟"
 MAX_TOOL_CORRECTIONS = 2  # provider-side rejections (tool_use_failed) the model may fix in one turn
 _REJECTED_TOOL = re.compile(r"for tool (\w+)")
@@ -177,7 +178,8 @@ def run_turn(
             ))
             turn.llm_calls.append({"step": step, "attempt": attempt.attempt, "status": attempt.status,
                                    "http_status": attempt.http_status, "latency_ms": attempt.latency_ms,
-                                   "waited_ms": attempt.waited_ms, "tokens": usage.as_dict()})
+                                   "waited_ms": attempt.waited_ms, "tokens": usage.as_dict(),
+                                   "retry_after": attempt.retry_after, "error": attempt.error})
 
         try:
             response = client.chat(model, messages, TOOL_SCHEMAS, on_attempt=record)
@@ -198,6 +200,10 @@ def run_turn(
             messages.append({"role": "user", "content": f"Your last tool call was rejected: {reason}. "
                                                         "Fix the arguments or omit optional ones."})
             continue
+        except LLMTruncatedError as exc:
+            turn.usage += exc.usage or Usage()
+            turn.reply, turn.ended_by, turn.error = REPLY_TRUNCATED, "llm_error", f"{exc.kind}: {exc}"
+            break
         except LLMError as exc:
             turn.reply, turn.ended_by, turn.error = REPLY_LLM_ERROR, "llm_error", f"{exc.kind}: {exc}"
             break

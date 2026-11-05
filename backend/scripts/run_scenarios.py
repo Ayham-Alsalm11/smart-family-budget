@@ -7,7 +7,8 @@ Each scenario gets a new seed database and an in-process ChromaDB (never the dev
 expenses cannot leak from one scenario into the next. Setup expenses go in through the services, without the model.
 Results are saved after every turn to backend/data/measurements/scenarios_<timestamp>.json (untracked). The `checks`
 of each turn come from `expect` in dev_scenarios.json; `judgement` is left for the person reading the results.
-Any 429 stops the whole run. These scenarios are not evaluation data.
+A short 429 is retried by the client; a retry-after over 60 s, or retries that fail, stop the run.
+These scenarios are not evaluation data.
 """
 import argparse
 import json
@@ -173,7 +174,7 @@ def run_scenario(scenario: dict, result: dict, settings: Settings, client: GroqC
                 mark = "OK " if record["passed"] else "?? "
                 print(f"  {scenario['id']}.{number} {mark}[{turn.ended_by}] {record['model_calls']} calls, "
                       f"{record['tokens']['total']} tok, repair {turn.repaired}: {tools}", flush=True)
-                if any(c["status"] == "rate_limited" for c in turn.llm_calls):
+                if turn.llm_calls and turn.llm_calls[-1]["status"] == "rate_limited":
                     raise RateLimited(f"429 in {scenario['id']}.{number}")
         engine.dispose()
 
@@ -216,7 +217,7 @@ def main(argv: list[str] | None = None) -> int:
     def save() -> None:
         path.write_text(json.dumps(report, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
 
-    client = GroqClient.from_settings(settings, max_rate_limit_retries=0)
+    client = GroqClient.from_settings(settings)
     ollama = OllamaEmbedder(settings.ollama_base_url, settings.embedding_model)
     report["ollama_warmup"] = ollama.warmup()
     if not report["ollama_warmup"]["ok"]:

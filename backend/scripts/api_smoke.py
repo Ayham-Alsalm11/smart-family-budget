@@ -11,8 +11,9 @@ with a fixed date, gpt-oss-120b and reasoning_effort=low:
    before each request, so that remaining-before is the limit and remaining-after shows what the request was charged.
    Its date differs from the scenario's, so that the first request cannot find the prompt in the cache.
 
-Results go to backend/data/measurements/api_smoke_<timestamp>.json (untracked), after every step. Any 429 stops the
-run. The API key, passwords and tokens are never printed or saved.
+Results go to backend/data/measurements/api_smoke_<timestamp>.json (untracked), after every step. A short 429 is
+retried by the client; a retry-after over 60 s, or retries that fail, stop the run. The API key, passwords and tokens
+are never printed or saved.
 """
 import argparse
 import json
@@ -45,7 +46,7 @@ EIGHT_THOUSAND = ("8000", "8,000", "8٬000", "٨٠٠٠", "8 آلاف", "8 الا
 
 
 class Stop(Exception):
-    """A 429: the run ends here."""
+    """A 429 the client gave up on: the run ends here."""
 
 
 class Run:
@@ -90,7 +91,7 @@ class Run:
                 "pending_action": body.get("pending_action"), "alerts": body["alerts"], "llm_calls": llm,
                 "tokens": {**tokens, "total": tokens["prompt"] + tokens["completion"]}, "ungrounded": ungrounded,
                 "seconds": seconds}
-        if any(call["status"] == "rate_limited" for call in llm):
+        if llm and llm[-1]["status"] == "rate_limited":
             step["title"], step["as_expected"] = text, False
             self.record(step)
             raise Stop(f"429 in step {n}")
@@ -244,7 +245,7 @@ def main(argv: list[str] | None = None) -> int:
             "agent_model": "main", "reasoning_effort": "low"})
         model = settings.model_id("main")
         report.update(model=model, reasoning_effort=settings.reasoning_effort)
-        client = GroqClient.from_settings(settings, max_rate_limit_retries=0)
+        client = GroqClient.from_settings(settings)
         embedder = OllamaEmbedder(settings.ollama_base_url, settings.embedding_model)
         report["ollama_warmup"] = embedder.warmup()
         store = _vector_store()

@@ -1,10 +1,13 @@
 """Groq client (§6.3): native tool calling, or a JSON-in-text fallback with the same schemas.
 
 - Retries timeouts, connection errors, 5xx and 429 with exponential backoff and jitter; a 429
-  waits for `retry-after` when the header is present.
+  waits for `retry-after` when the header is present. A `retry-after` over a minute is the daily
+  quota: it stops at once.
 - Never returns None (A1): after the last attempt it raises a typed `LLMError`.
 - A limiter per model keeps requests under the tokens-per-minute limit, from a rolling window
   of its own usage and the `x-ratelimit-*` headers, so that 429s are avoided rather than retried.
+  Each request reserves its prompt estimate plus the whole of `max_tokens`.
+- A reply cut by `max_tokens` is an error (`LLMTruncatedError`), not a short answer.
 - One client serves every API request: its shared state is guarded by locks, and a waiting
   request sleeps outside them.
 - Every attempt is reported through `on_attempt`; the agent loop writes it to `llm_calls`.
@@ -22,7 +25,8 @@ from typing import Any
 import httpx
 
 GROQ_URL = "https://api.groq.com/openai/v1"
-EXPECTED_COMPLETION_TOKENS = 300  # added to the prompt estimate when reserving limiter capacity
+MAX_RETRY_WAIT = 60.0  # a longer retry-after means the daily quota, not the minute
+_PRIVATE_HEADERS = {"authorization", "cookie", "set-cookie"}
 _UNSET: Any = object()
 
 
@@ -31,6 +35,7 @@ _UNSET: Any = object()
 class LLMError(Exception):
     kind = "error"
     retryable = False
+    usage: "Usage | None" = None  # what the failed call still cost, when known
 
     def __init__(self, message: str, http_status: int | None = None) -> None:
         super().__init__(message)
@@ -51,6 +56,10 @@ class LLMRateLimitError(LLMError):
     kind = "rate_limited"
     retryable = True
 
+    def __init__(self, message: str, http_status: int | None = 429, retry_after: float | None = None) -> None:
+        super().__init__(message, http_status)
+        self.retry_after = retry_after
+
 
 class LLMRequestError(LLMError):
     """A 4xx other than 429 (bad request, unknown model, invalid key): not retried."""
@@ -62,6 +71,13 @@ class LLMToolValidationError(LLMRequestError):
     """Groq's 400 `tool_use_failed`: the model's tool call did not match the schema. The loop lets the model fix it."""
 
     kind = "tool_use_failed"
+
+
+class LLMTruncatedError(LLMError):
+    """finish_reason = length: the reply hit `max_tokens`, so it cannot be trusted as complete. Not retried, because
+    the same request would be cut in the same place."""
+
+    kind = "truncated"
 
 
 class LLMResponseError(LLMError):
@@ -113,12 +129,13 @@ class ToolCall:
 class Attempt:
     model: str
     attempt: int
-    status: str  # ok, timeout, server_error, rate_limited, request_error, bad_response
+    status: str  # ok, timeout, server_error, rate_limited, request_error, bad_response, truncated
     http_status: int | None
     latency_ms: int
     usage: Usage | None = None
     error: str | None = None
     waited_ms: int = 0  # time the limiter held the request back
+    retry_after: float | None = None  # from a 429
 
 
 @dataclass
@@ -130,6 +147,7 @@ class LLMResponse:
     latency_ms: int
     attempts: int
     assistant_message: dict  # to append to the conversation before the tool results
+    finish_reason: str | None = None
 
 
 # ---------- rate limiting ----------
@@ -248,11 +266,6 @@ def estimate_prompt_tokens(messages: Any, tools: Any = None) -> int:
     return len(json.dumps([messages, tools], ensure_ascii=False)) // 3
 
 
-def estimate_tokens(payload: dict) -> int:
-    """The prompt's rough size plus the expected completion."""
-    return estimate_prompt_tokens(payload.get("messages"), payload.get("tools")) + EXPECTED_COMPLETION_TOKENS
-
-
 # ---------- JSON fallback (TOOL_MODE=json) ----------
 
 JSON_MODE_INSTRUCTIONS = (
@@ -344,6 +357,12 @@ def _error_code(response: httpx.Response) -> str | None:
         return None
 
 
+def _rate_limit_text(response: httpx.Response) -> str:
+    """The error and all the response headers, so that the reason of a 429 can be read later."""
+    headers = {k: v for k, v in response.headers.items() if k.lower() not in _PRIVATE_HEADERS}
+    return f"{_error_text(response)} | headers: {json.dumps(headers, ensure_ascii=False)}"
+
+
 def _error_text(response: httpx.Response) -> str:
     try:
         error = response.json().get("error") or {}
@@ -360,10 +379,9 @@ class GroqClient:
         base_url: str = GROQ_URL,
         timeout: float = 30.0,
         max_retries: int = 3,
-        max_rate_limit_retries: int | None = None,
-        max_retry_wait: float = 60.0,
+        max_retry_wait: float = MAX_RETRY_WAIT,
         reasoning_effort: str | None = "low",
-        max_tokens: int = 1024,
+        max_tokens: int = 600,
         tool_mode: str = "native",
         tokens_per_minute: int = 8000,
         transport: httpx.BaseTransport | None = None,
@@ -374,7 +392,6 @@ class GroqClient:
         if tool_mode not in ("native", "json"):
             raise ValueError(f"unknown tool mode {tool_mode!r}")
         self.max_retries = max_retries
-        self.max_rate_limit_retries = max_rate_limit_retries
         self.max_retry_wait = max_retry_wait
         self.reasoning_effort = reasoning_effort
         self.max_tokens = max_tokens
@@ -434,9 +451,8 @@ class GroqClient:
         effort = self.reasoning_effort if reasoning_effort is _UNSET else reasoning_effort
         payload = self._payload(model, messages, tools or [], temperature, effort)
         limiter = self.limiter(model)
-        raw_estimate = estimate_tokens(payload)
-        estimate = limiter.calibrate(raw_estimate)
-        rate_limit_retries = 0
+        raw_prompt = estimate_prompt_tokens(payload["messages"], payload.get("tools"))
+        estimate = limiter.calibrate(raw_prompt) + self.max_tokens
 
         for attempt in range(1, self.max_retries + 2):
             reservation = limiter.acquire(estimate)
@@ -444,6 +460,7 @@ class GroqClient:
             started = self._clock()
             response: httpx.Response | None = None
             wait: float | None = None
+            usage: Usage | None = None
             try:
                 response = self._http.post("/chat/completions", json=payload)
             except httpx.TimeoutException as exc:
@@ -460,15 +477,19 @@ class GroqClient:
                     except (ValueError, KeyError, TypeError, IndexError) as exc:
                         error = LLMResponseError(f"unreadable response: {exc}", 200)
                     else:
-                        limiter.settle(reservation, result.usage.total_tokens)
-                        limiter.observe(raw_estimate, result.usage.total_tokens)
-                        if on_attempt:
-                            on_attempt(Attempt(model, attempt, "ok", 200, result.latency_ms, result.usage,
-                                               waited_ms=waited_ms))
-                        return result
+                        usage = result.usage
+                        limiter.settle(reservation, usage.total_tokens)
+                        limiter.observe(raw_prompt, usage.prompt_tokens)
+                        if result.finish_reason != "length":
+                            if on_attempt:
+                                on_attempt(Attempt(model, attempt, "ok", 200, result.latency_ms, usage,
+                                                   waited_ms=waited_ms))
+                            return result
+                        error = LLMTruncatedError(f"the reply was cut at max_tokens={self.max_tokens}", 200)
+                        error.usage = usage
                 elif response.status_code == 429:
-                    error = LLMRateLimitError(_error_text(response), 429)
                     wait = parse_duration(response.headers.get("retry-after"))
+                    error = LLMRateLimitError(_rate_limit_text(response), 429, wait)
                 elif response.status_code >= 500:
                     error = LLMServerError(_error_text(response), response.status_code)
                 elif _error_code(response) == "tool_use_failed":
@@ -477,27 +498,25 @@ class GroqClient:
                     error = LLMRequestError(_error_text(response), response.status_code)
 
             latency_ms = int((self._clock() - started) * 1000)
-            limiter.settle(reservation, 0 if response is None or response.status_code == 429 else estimate)
+            if usage is None:
+                limiter.settle(reservation, 0 if response is None or response.status_code == 429 else estimate)
             if on_attempt:
-                on_attempt(Attempt(model, attempt, error.kind, error.http_status, latency_ms, None, str(error),
-                                   waited_ms=waited_ms))
+                on_attempt(Attempt(model, attempt, error.kind, error.http_status, latency_ms, usage, str(error),
+                                   waited_ms=waited_ms, retry_after=wait))
             if not error.retryable or attempt > self.max_retries:
                 raise error
-            if isinstance(error, LLMRateLimitError):
-                rate_limit_retries += 1
-                if self.max_rate_limit_retries is not None and rate_limit_retries > self.max_rate_limit_retries:
-                    raise error
-                if wait is not None and wait > self.max_retry_wait:
-                    raise LLMRateLimitError(f"{error} (retry-after {wait:.0f} s is too long)", 429)
+            if wait is not None and wait > self.max_retry_wait:
+                raise error
             self._sleep(wait if wait is not None else self._backoff(attempt))
         raise AssertionError("unreachable")
 
     def _read(self, model: str, response: httpx.Response, attempts: int, latency_ms: int) -> LLMResponse:
         body = response.json()
-        message = body["choices"][0]["message"]
+        choice = body["choices"][0]
         reader = _json_mode_message if self.tool_mode == "json" else _native_message
-        content, calls, assistant = reader(message)
-        return LLMResponse(model, content, calls, Usage.from_api(body.get("usage")), latency_ms, attempts, assistant)
+        content, calls, assistant = reader(choice["message"])
+        return LLMResponse(model, content, calls, Usage.from_api(body.get("usage")), latency_ms, attempts, assistant,
+                           choice.get("finish_reason"))
 
     def close(self) -> None:
         self._http.close()

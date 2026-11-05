@@ -34,7 +34,8 @@ class FakeLLM:
         item = self.responses.pop(0)
         if isinstance(item, LLMError):
             if on_attempt:
-                on_attempt(Attempt(model, 1, item.kind, item.http_status, 5, None, str(item)))
+                on_attempt(Attempt(model, 1, item.kind, item.http_status, 5, None, str(item),
+                                   retry_after=getattr(item, "retry_after", None)))
             raise item
         if on_attempt:
             on_attempt(Attempt(model, 1, "ok", 200, item.latency_ms, item.usage))

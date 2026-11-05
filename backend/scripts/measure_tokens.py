@@ -7,7 +7,7 @@ Each phase runs on a fresh copy of the seed database (never the development data
 in-process ChromaDB, with a fixed date. --messages picks messages; --setup runs messages first to
 prepare the state (e.g. expenses to edit), marked "setup" so that they stay out of comparisons.
 Results are saved after every message to backend/data/measurements/measure_<timestamp>.json
-(untracked). Any 429 stops the whole run.
+(untracked). A short 429 is retried by the client; a retry-after over 60 s, or retries that fail, stop the run.
 """
 import argparse
 import json
@@ -124,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
     folder.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     out = folder / f"measure_{stamp}.json"
-    client = GroqClient.from_settings(settings, max_rate_limit_retries=0)
+    client = GroqClient.from_settings(settings)
     embedder = OllamaEmbedder(settings.ollama_base_url, settings.embedding_model)
     embedder.warmup()
     report = {"today": args.today.isoformat(), "started": stamp, "tool_mode": settings.tool_mode,

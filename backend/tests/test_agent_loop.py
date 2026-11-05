@@ -1,9 +1,10 @@
+import httpx
 from sqlalchemy import select
 
 from app.agent.grounding import extract_numbers, ungrounded_numbers
-from app.agent.loop import REPLY_LLM_ERROR, REPLY_STEP_LIMIT, REPLY_TOOL_REJECTED, run_turn
+from app.agent.loop import REPLY_LLM_ERROR, REPLY_STEP_LIMIT, REPLY_TOOL_REJECTED, REPLY_TRUNCATED, run_turn
 from app.db.models import Expense, LlmCall, Message, PendingAction, ToolLog
-from app.llm.client import LLMRateLimitError, LLMToolValidationError, ToolCall
+from app.llm.client import GroqClient, LLMRateLimitError, LLMToolValidationError, ToolCall
 from app.services import expenses
 
 from fake_llm import FakeLLM, call, respond
@@ -150,6 +151,32 @@ def test_provider_rejection_gives_up_after_two_corrections(session, member_ctx):
     assert len(llm.requests) == 3
     assert [log.status for log in session.scalars(select(ToolLog))] == ["invalid_args"] * 3
     assert session.scalars(select(Message).where(Message.role == "assistant")).one().content == REPLY_TOOL_REJECTED
+
+
+def test_a_cut_reply_is_recorded_and_explained(session, member_ctx):
+    body = {"choices": [{"message": {"role": "assistant", "content": "نص مقطو"}, "finish_reason": "length"}],
+            "usage": {"prompt_tokens": 1700, "completion_tokens": 600,
+                      "completion_tokens_details": {"reasoning_tokens": 500}}}
+    client = GroqClient("k", transport=httpx.MockTransport(lambda _request: httpx.Response(200, json=body)))
+    turn = run_turn(session, member_ctx, "x", client, model="fake-model")
+    assert (turn.reply, turn.ended_by) == (REPLY_TRUNCATED, "llm_error") and "truncated" in turn.error
+    assert turn.usage.total_tokens == 2300, "the call was paid for"
+    row = session.scalars(select(LlmCall)).one()
+    assert (row.status, row.http_status, row.completion_tokens, row.reasoning_tokens) == ("truncated", 200, 600, 500)
+    assert "max_tokens" in row.error
+
+
+def test_the_text_and_headers_of_a_429_reach_llm_calls(session, member_ctx):
+    def handler(_request):
+        return httpx.Response(429, headers={"retry-after": "3600", "x-ratelimit-remaining-tokens": "12"},
+                              json={"error": {"message": "tokens per day"}})
+
+    client = GroqClient("secret-key", transport=httpx.MockTransport(handler))
+    turn = run_turn(session, member_ctx, "x", client, model="fake-model")
+    row = session.scalars(select(LlmCall)).one()
+    assert "tokens per day" in row.error and "x-ratelimit-remaining-tokens" in row.error
+    assert "secret-key" not in row.error
+    assert turn.llm_calls[-1]["retry_after"] == 3600 and "tokens per day" in turn.llm_calls[-1]["error"]
 
 
 def test_pending_action_and_alerts_reach_the_turn(session, member_ctx):
