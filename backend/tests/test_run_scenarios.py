@@ -1,14 +1,18 @@
-"""scripts/run_scenarios.py with a scripted model: no Groq, no Ollama."""
+"""scripts/run_scenarios.py with a scripted model, without Groq or Ollama (§9.5, §13)."""
 import json
+from datetime import timedelta
 from types import SimpleNamespace
 
 import httpx
 import pytest
 
+from app.agent.loop import StepRecord, TurnResult
 from app.auth import passwords
 from app.llm.client import GroqClient, LLMRateLimitError
+from app.services.expenses import add_expense
 from scripts import run_scenarios
 
+from conftest import TODAY
 from fake_llm import FakeLLM, call, respond
 
 DAILY = "tokens per day exceeded | headers: {\"retry-after\": \"3600\"}"
@@ -181,6 +185,80 @@ def test_a_short_429_is_retried_and_only_counted(harness):
     assert run["summary"]["rate_limited_attempts"] == 1 and turn["model_calls"] == 1
     assert turn["rate_limit_events"][0]["retry_after"] == 1 and "minute limit" in turn["rate_limit_events"][0]["error"]
     assert [c["status"] for c in turn["calls"]] == ["rate_limited", "ok"]
+
+
+# ---------- checks on behaviour and result ----------
+
+def turn_with(*steps, reply="", ended_by="reply", pending=None):
+    return TurnResult(reply=reply, ended_by=ended_by, pending_action=pending,
+                      steps=[StepRecord(1, tool, arguments, status, 1, {}) for tool, arguments, status in steps])
+
+
+def checks(session, ctx, expect, turn, refs=None):
+    results = run_scenarios.evaluate({"ended_by": turn.ended_by, **expect}, turn, session, refs or {}, ctx)
+    return all(c["ok"] for c in results)
+
+
+def asked(*fields):
+    return turn_with(("ask_clarification", {"question": "؟", "missing_fields": list(fields)}, "ok"), ended_by="clarification")
+
+
+CATEGORY_NOT_AMOUNT = {"clarifies": {"includes": ["category"], "excludes": ["amount"]}}
+
+
+def test_a_clarification_must_ask_for_the_right_field(session, manager_ctx):
+    assert checks(session, manager_ctx, CATEGORY_NOT_AMOUNT, asked("category"))
+    assert not checks(session, manager_ctx, CATEGORY_NOT_AMOUNT, asked("amount"))
+    assert not checks(session, manager_ctx, CATEGORY_NOT_AMOUNT, asked("category", "amount"))
+    assert not checks(session, manager_ctx, CATEGORY_NOT_AMOUNT, turn_with())
+
+
+LAST_MONTH_FOOD = {
+    "reply_total": {"period": "last_month", "category": "أكل وشرب"},
+    "achieved_by": [
+        {"tool": "get_total", "status": "ok", "args": {"period": ["last_month", "2026-10"], "category": "أكل وشرب"}},
+        {"tool": "compare_months", "status": "ok", "args": {"month_a": "2026-10", "category": "أكل وشرب"}},
+        {"tool": "compare_months", "status": "ok", "args": {"month_b": "2026-10", "category": "أكل وشرب"}},
+    ],
+}
+
+
+@pytest.fixture
+def food_last_month(session, manager_ctx):
+    last_month = TODAY.replace(day=1) - timedelta(days=1)
+    add_expense(session, manager_ctx, amount=148000, category="أكل وشرب", expense_date=last_month)
+    add_expense(session, manager_ctx, amount=9000, category="صحة", expense_date=last_month)
+    add_expense(session, manager_ctx, amount=500, category="أكل وشرب", expense_date=TODAY)
+
+
+@pytest.mark.parametrize("step, reply, expected", [
+    (("get_total", {"period": "last_month", "category": "أكل وشرب"}, "ok"), "148,000 ليرة", True),
+    (("compare_months", {"month_a": "2026-10", "month_b": "2026-11", "category": "أكل وشرب"}, "ok"), "١٤٨٬٠٠٠ ليرة", True),
+    (("compare_months", {"month_a": "2026-09", "month_b": "2026-10", "category": "أكل وشرب"}, "ok"), "148 ألف", True),
+    (("compare_months", {"month_a": "2026-09", "month_b": "2026-11", "category": "أكل وشرب"}, "ok"), "148,000", False),
+    (("compare_months", {"month_a": "2026-10", "month_b": "2026-11"}, "ok"), "148,000", False),
+    (("get_total", {"period": "last_month", "category": "صحة"}, "ok"), "148,000", False),
+    (("get_total", {"period": "last_month", "category": "أكل وشرب"}, "ok"), "150,000 ليرة", False),
+    (("get_total", {"period": "last_month", "category": "أكل وشرب"}, "error"), "148,000", False),
+])
+def test_another_tool_may_serve_if_the_answer_is_right(session, manager_ctx, food_last_month, step, reply, expected):
+    assert checks(session, manager_ctx, LAST_MONTH_FOOD, turn_with(step, reply=reply)) is expected
+
+
+def test_the_reference_is_computed_from_the_database(session, manager_ctx, food_last_month):
+    assert run_scenarios._reference_total(session, manager_ctx, {"period": "last_month"}) == 157000
+    assert run_scenarios._reference_total(session, manager_ctx, {"period": "this_month", "category": "أكل وشرب"}) == 500
+    assert run_scenarios._reference_total(session, manager_ctx, {"period": "today", "category": "صحة"}) == 0
+
+
+def test_a_preview_after_a_stale_yes_must_be_of_the_right_expense(session, manager_ctx):
+    expect = {"preview_only_of": "$second"}
+    refs = {"second": 62}
+    right = turn_with(ended_by="confirmation", pending={"expense": {"id": 62}})
+    wrong = turn_with(ended_by="confirmation", pending={"expense": {"id": 1}})
+    assert checks(session, manager_ctx, expect, right, refs)
+    assert not checks(session, manager_ctx, expect, wrong, refs)
+    assert checks(session, manager_ctx, expect, turn_with(), refs), "no preview at all is fine"
 
 
 def test_the_scenario_file_is_loaded_from_the_repository():

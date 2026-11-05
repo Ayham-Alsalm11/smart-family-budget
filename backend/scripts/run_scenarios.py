@@ -1,4 +1,4 @@
-"""Multi-turn development scenarios on the real models (step 6). This script spends free-tier Groq quota.
+"""Multi-turn development scenarios on the real models (step 6, §9.5, §13). This script spends free-tier Groq quota.
 
     cd backend
     .venv\\Scripts\\python -m scripts.run_scenarios [--today 2026-11-04] [--models main,small] [--only S1,S3]
@@ -21,22 +21,25 @@ import sys
 import tempfile
 import time
 from datetime import date, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 import chromadb
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.agent.context import ToolContext
+from app.agent.grounding import extract_numbers
 from app.agent.loop import TurnOptions, TurnResult, run_turn
 from app.agent.memory import memory_for_model, recent_messages
 from app.db import seed
-from app.db.models import Expense, Member
+from app.db.models import Category, Expense, Member
 from app.db.session import init_db, make_engine, make_session_factory
 from app.llm.client import MAX_RETRY_WAIT, GroqClient
 from app.rag.embeddings import OllamaEmbedder
 from app.rag.vector_store import COLLECTIONS, ChromaVectorStore
 from app.services.expenses import add_expense, reindex_missing
+from app.services.periods import resolve_period
 from app.settings import BACKEND_DIR, Settings, get_settings
 from app.tools.dispatch import dumps
 
@@ -100,19 +103,52 @@ def _check_expense(session: Any, wanted: dict, refs: dict[str, int]) -> bool:
     return "amount" not in wanted or float(row.amount) == wanted["amount"]
 
 
-def evaluate(expect: dict, turn: TurnResult, session: Any, refs: dict[str, int]) -> list[dict]:
-    """What the turn was expected to do, each as a separate check."""
+def _used(steps: list, wanted: dict, refs: dict[str, int]) -> bool:
+    return any(s.tool == wanted["tool"] and s.status == wanted["status"] and _matches(wanted["args"], s.arguments, refs)
+               for s in steps)
+
+
+def _reference_total(session: Any, ctx: ToolContext, wanted: dict) -> Decimal:
+    """The answer computed here in SQL, not through the tools, so that they are not tested against themselves."""
+    span = resolve_period(ctx, wanted["period"])
+    query = select(func.sum(Expense.amount_base)).where(
+        Expense.family_id == ctx.family_id, Expense.expense_date.between(span.start, span.end))
+    if "category" in wanted:
+        query = query.join(Category).where(Category.name_ar == wanted["category"])
+    return Decimal(str(session.scalar(query) or 0)).normalize()
+
+
+def _in_reply(value: Decimal, reply: str) -> bool:
+    return value in {number.normalize() for number in extract_numbers(reply)}
+
+
+def evaluate(expect: dict, turn: TurnResult, session: Any, refs: dict[str, int], ctx: ToolContext) -> list[dict]:
+    """What the turn was expected to do, each as a separate check. Behaviour and result are judged, not the name of
+    one tool: `achieved_by` lists every tool call that serves the purpose, and `reply_total` checks the answer."""
     steps = turn.steps
     checks = [{"check": "ended_by", "ok": _matches(expect["ended_by"], turn.ended_by, refs)}]
     for wanted in expect.get("tools", []):
-        found = any(s.tool == wanted["tool"] and s.status == wanted["status"]
-                    and _matches(wanted["args"], s.arguments, refs) for s in steps)
-        checks.append({"check": f"tool {wanted['tool']} {wanted['args']}", "ok": found})
+        checks.append({"check": f"tool {wanted['tool']} {wanted['args']}", "ok": _used(steps, wanted, refs)})
+    if "achieved_by" in expect:
+        names = sorted({wanted["tool"] for wanted in expect["achieved_by"]})
+        checks.append({"check": f"one of {names}", "ok": any(_used(steps, w, refs) for w in expect["achieved_by"])})
+    if "clarifies" in expect:
+        asked = [field for s in steps if s.tool == "ask_clarification" and s.status == "ok"
+                 for field in s.arguments["missing_fields"]]
+        wanted = expect["clarifies"]
+        ok = all(f in asked for f in wanted.get("includes", [])) and not any(f in asked for f in wanted.get("excludes", []))
+        checks.append({"check": f"asks about {wanted}", "ok": ok})
+    if "reply_total" in expect:
+        total = _reference_total(session, ctx, expect["reply_total"])
+        checks.append({"check": f"reply has the reference {total:f}", "ok": _in_reply(total, turn.reply)})
+    if "reply_number" in expect:
+        checks.append({"check": f"reply has {expect['reply_number']}",
+                       "ok": _in_reply(Decimal(expect["reply_number"]).normalize(), turn.reply)})
+    if "preview_only_of" in expect and turn.pending_action:
+        target = refs[expect["preview_only_of"][1:]]
+        checks.append({"check": "a preview, if any, is of the right expense", "ok": turn.pending_action["expense"]["id"] == target})
     for name in expect.get("no_tools", []):
         checks.append({"check": f"no {name}", "ok": all(s.tool != name for s in steps)})
-    for tool, names in expect.get("without_args", {}).items():
-        used = [s.arguments for s in steps if s.tool == tool]
-        checks.append({"check": f"{tool} without {names}", "ok": all(n not in a for a in used for n in names)})
     if "llm_calls" in expect:
         checks.append({"check": f"{expect['llm_calls']} model calls", "ok": len(turn.llm_calls) == expect["llm_calls"]})
     if expect.get("no_model_free"):
@@ -185,7 +221,7 @@ def run_scenario(scenario: dict, result: dict, settings: Settings, client: GroqC
                 turn = run_turn(session, ctx, step["text"], client, model=model, embedder=embedder, vector_store=store,
                                 max_steps=settings.llm_max_steps, options=options)
                 seconds = round(time.perf_counter() - started, 1)
-                checks = evaluate(step["expect"], turn, session, refs)
+                checks = evaluate(step["expect"], turn, session, refs, ctx)
                 result["turns"].append(_turn_record(number, step["text"], turn, memory, seconds, checks))
                 save()
                 record = result["turns"][-1]
