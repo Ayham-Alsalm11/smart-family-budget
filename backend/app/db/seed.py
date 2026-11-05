@@ -1,4 +1,4 @@
-"""Development seed: the 12 categories and a demo family with 3 months of expenses.
+"""Development seed (§4): the 12 categories and a demo family with 3 months of expenses.
 
     cd backend
     .venv\\Scripts\\python -m app.db.seed

@@ -1,3 +1,4 @@
+"""GET /health: the status of each service, never the key (§8)."""
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, inspect
 

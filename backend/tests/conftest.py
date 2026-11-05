@@ -1,4 +1,4 @@
-"""Shared fixtures: a temporary SQLite database per test, a family with members, and fake RAG services."""
+"""Shared fixtures (§2): a temporary SQLite database per test, a family with members, and fake RAG services."""
 import hashlib
 from datetime import date
 from decimal import Decimal

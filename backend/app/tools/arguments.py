@@ -1,4 +1,4 @@
-"""Argument models of the 11 core tools. The model's arguments are validated here before any service runs."""
+"""Argument models of the 11 core tools (§7.1). The model's arguments are validated here before any service runs."""
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field

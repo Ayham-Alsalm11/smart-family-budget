@@ -1,4 +1,4 @@
-"""Tests against the real local services. Not run by default: `pytest -m integration`."""
+"""Tests against the real local services (§1, §13). Not run by default: `pytest -m integration`."""
 import pytest
 
 from app.rag.embeddings import OllamaEmbedder

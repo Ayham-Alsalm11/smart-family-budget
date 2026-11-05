@@ -1,4 +1,4 @@
-"""Engine and session factory."""
+"""Engine and session factory for SQLite (§4)."""
 from pathlib import Path
 
 from sqlalchemy import Engine, create_engine, event

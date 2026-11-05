@@ -1,6 +1,6 @@
 """System prompt (§6.4). Instructions in English, replies in Syrian Arabic; kept short because every call pays for it (§9.5).
 
-The rules come from the first token measurement (step 5a). The example is written for the prompt and is
+The rules come from the token measurement of step 5a and the scenarios of step 6. The example is written for the prompt and is
 not taken from any test data (checked against baseline/evaluation/test_dataset.csv and the 20 measurement
 messages).
 """

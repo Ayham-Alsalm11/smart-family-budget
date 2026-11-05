@@ -176,8 +176,8 @@ class RateLimiter:
     - After each response, `x-ratelimit-remaining-tokens` gives the free budget; Groq refills it
       continuously at about limit/60 tokens a second, so a request waits only for the missing part.
     - Before any header is seen, a rolling 60 s window of the limiter's own usage is used.
-    - Estimates are calibrated per model: a moving average of actual ÷ estimated tokens, plus a small
-      safety margin (the raw estimate overshot by about 1.7× in step 5a).
+    - Prompt estimates are calibrated per model: a moving average of actual ÷ estimated tokens, plus a
+      small safety margin, because the raw estimate overshot by about 1.7× in step 5a.
     """
 
     def __init__(self, tokens_per_minute: int = 8000, window: float = 60.0,

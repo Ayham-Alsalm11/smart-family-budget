@@ -1,3 +1,4 @@
+"""The database schema and the development seed (§4)."""
 from decimal import Decimal
 
 import bcrypt

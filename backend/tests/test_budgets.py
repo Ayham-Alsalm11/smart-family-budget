@@ -1,3 +1,4 @@
+"""Budgets: the effective limit, set_budget and check_budget (§4, §7.1)."""
 from decimal import Decimal
 
 import pytest

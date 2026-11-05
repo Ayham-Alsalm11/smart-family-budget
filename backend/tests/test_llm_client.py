@@ -330,7 +330,7 @@ def test_all_threads_get_the_same_limiter():
 
 
 def test_simulated_groq_bucket_no_429_and_little_waiting():
-    """A fake server with Groq's continuous refill: 20 calls of 1,650 real tokens, estimated at about 3,000."""
+    """A fake server with Groq's continuous refill: 20 calls of 1,650 real tokens, with a prompt estimated far higher."""
     clock = FakeClock()
     state = {"bucket": 8000.0, "at": clock.now, "rejected": 0}
     actual = 1650

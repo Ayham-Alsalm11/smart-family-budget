@@ -1,4 +1,4 @@
-"""FastAPI dependencies: the database session, the current member and the ToolContext.
+"""FastAPI dependencies (§5, §6.2): the database session, the current member and the ToolContext.
 
 The context comes only from the token and the database (D7). No request body or query can set the family,
 the member or the role.

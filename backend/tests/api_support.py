@@ -1,4 +1,4 @@
-"""Helpers for the API tests: accounts created through the API, and rows prepared through the services."""
+"""Helpers for the API tests (§8): accounts created through the API, and rows prepared through the services."""
 from contextlib import contextmanager
 from dataclasses import dataclass
 

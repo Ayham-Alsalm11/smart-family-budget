@@ -1,4 +1,4 @@
-"""Grounding cases taken from the first token measurement (step 5a)."""
+"""Grounding cases taken from the first token measurement of step 5a (§6.9)."""
 import json
 from decimal import Decimal
 

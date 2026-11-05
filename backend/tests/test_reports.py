@@ -1,3 +1,4 @@
+"""Totals, breakdowns and month comparison (§7.1)."""
 from decimal import Decimal
 
 import pytest

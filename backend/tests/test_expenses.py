@@ -1,3 +1,4 @@
+"""The expenses service: add, list, update, delete and their permissions (§5, §7.1)."""
 from datetime import date
 from decimal import Decimal
 

@@ -1,4 +1,4 @@
-"""Totals, breakdowns, month comparison and the monthly report. Every sum is over `amount_base`."""
+"""Totals, breakdowns, month comparison and the monthly report (§7.1, §8). Every sum is over `amount_base`."""
 from datetime import date
 from decimal import Decimal
 

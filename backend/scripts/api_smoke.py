@@ -1,4 +1,4 @@
-"""One real run on Groq through the API itself (step 5b). This script spends free-tier Groq quota.
+"""One real run on Groq through the API itself (step 5b, §13). This script spends free-tier Groq quota.
 
     cd backend
     .venv\\Scripts\\python -m scripts.api_smoke [--today 2026-11-04]

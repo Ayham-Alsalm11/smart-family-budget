@@ -1,4 +1,4 @@
-"""A scripted stand-in for GroqClient: returns prepared responses in order and records every request."""
+"""A scripted stand-in for GroqClient (§6.3): returns prepared responses in order and records every request."""
 import copy
 import itertools
 import json

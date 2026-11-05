@@ -1,3 +1,4 @@
+"""Conversion to the family's base currency (§4, D10)."""
 from decimal import Decimal
 
 import pytest

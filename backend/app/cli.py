@@ -4,7 +4,7 @@
     .venv\\Scripts\\python -m app.cli --user manager --model small [--today 2026-11-04] [--db data\\dev.db]
 
 The member is chosen by username from the seeded database, WITHOUT a password. This is a
-development shortcut; real users log in through the API (step 5b).
+development shortcut; real users log in through the API (§8).
 """
 import argparse
 import json

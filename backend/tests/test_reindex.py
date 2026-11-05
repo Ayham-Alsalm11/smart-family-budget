@@ -1,4 +1,4 @@
-"""`python -m app.rag.reindex` on an in-process ChromaDB."""
+"""`python -m app.rag.reindex` on an in-process ChromaDB (§4)."""
 import chromadb
 import pytest
 

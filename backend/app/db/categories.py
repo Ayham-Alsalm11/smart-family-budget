@@ -1,4 +1,4 @@
-"""The 12 expense categories, copied from GP1 (baseline/config.py; icons from baseline/src/database/seed.py).
+"""The 12 expense categories (§3.1, §4), copied from GP1 (baseline/config.py; icons from baseline/src/database/seed.py).
 
 Copied rather than imported, so that the baseline stays frozen (D12).
 """

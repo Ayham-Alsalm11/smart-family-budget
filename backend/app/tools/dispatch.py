@@ -36,7 +36,7 @@ _LOG_STATUS = {"missing_fields": "invalid_args", "not_available": "error"}
 @dataclass
 class ToolDeps:
     session: Session
-    source_text: str = ""  # the user's message, stored with expenses the agent adds
+    source_text: str = ""  # stored with expenses the agent adds; after a clarification it holds the whole chain (§6.6)
     embedder: Any = None
     vector_store: Any = None
     known_expense_ids: set[int] | None = None  # set by the agent loop; None means no check

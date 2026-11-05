@@ -1,3 +1,4 @@
+"""Period keywords to date ranges (§7.4)."""
 from datetime import date
 
 import pytest

@@ -1,3 +1,4 @@
+"""The development terminal chat (§1)."""
 import io
 
 from app import cli

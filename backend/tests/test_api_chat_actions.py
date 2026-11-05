@@ -1,4 +1,4 @@
-"""Pending actions and POST /chat with a scripted model: no Groq in these tests."""
+"""Pending actions and POST /chat with a scripted model, without Groq (§6.5, §8)."""
 from datetime import timedelta
 
 import pytest

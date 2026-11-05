@@ -1,4 +1,4 @@
-"""Registration, login, tokens, invites, members and family settings, through the API."""
+"""Registration, login, tokens, invites, members and family settings, through the API (§5, §8)."""
 import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta

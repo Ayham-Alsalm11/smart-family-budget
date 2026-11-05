@@ -1,4 +1,4 @@
-"""Bring ChromaDB in line with the development database.
+"""Bring ChromaDB in line with the development database (§1, §4).
 
     cd backend
     .venv\\Scripts\\python -m app.rag.reindex          # embed the expenses that have no vector yet

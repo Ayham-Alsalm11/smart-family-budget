@@ -1,4 +1,4 @@
-"""Shared pieces of the routers: id types, and the search services for the current request.
+"""Shared pieces of the routers (§8): id types, and the search services for the current request.
 
 Route functions have no return annotation on purpose: with `-> dict`, FastAPI would send Decimal money values as
 strings instead of numbers.

@@ -1,4 +1,4 @@
-"""Ollama embeddings client (BGE-M3, 1024 dimensions).
+"""Ollama embeddings client (§1, A3 in §3.2): BGE-M3, 1024 dimensions.
 
 The timeout is 120 s with 2 extra attempts, because the first request after a cold start
 takes about 30 s (A3). `warmup()` sends that first request at start-up.
