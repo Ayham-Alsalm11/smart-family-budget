@@ -11,6 +11,9 @@ Reply side:
 - A year (2000–2100) is accepted only if a date in the results has it, so a wrong year is still caught.
 Tool side: every number in the results, the parts of every date, and ratios inside each object.
 The user's current message also counts: repeating a number they said is not inventing one.
+
+`correct_years` runs first and fixes the one mistake that needs no repair request: a date whose month and day are in
+the results with another year.
 """
 import json
 import re
@@ -29,6 +32,7 @@ _NUMBER = re.compile(
     r"(?:[  ]?([%٪]))?"
 )
 _DATE = re.compile(r"\b(\d{4})-(\d{2})(?:-(\d{2}))?\b")
+_FULL_DATE = re.compile(r"(?<![0-9٠-٩۰-۹-])[0-9٠-٩۰-۹]{4}-[0-9٠-٩۰-۹]{2}-[0-9٠-٩۰-۹]{2}(?![0-9٠-٩۰-۹])")
 _PLAIN = re.compile(r"\d+(?:\.\d+)?")
 PERCENT_TOLERANCE = Decimal("0.1")
 
@@ -118,6 +122,28 @@ def collect_evidence(tool_results: list[str]) -> Evidence:
 def _close(number: ShownNumber, candidates: set[Decimal], tolerance: Decimal) -> bool:
     """Signs are compared away: replies state the direction in words ("نقص 61.7%" for -61.7)."""
     return any(abs(abs(number.value) - abs(c)) <= tolerance for c in candidates)
+
+
+def correct_years(reply: str, tool_results: list[str], user_message: str = "") -> tuple[str, list[dict[str, str]]]:
+    """Put the results' year back into a reply's date (§6.9). Returns the reply and what changed.
+
+    The model keeps writing 2024 for 2026 (S6), and each time it cost a repair request. A date stays as it is if the
+    results or the user wrote it, and also if its month and day appear in the results under two years: over 12 months
+    of history that is possible, and then only the model knows which one it meant.
+    """
+    found = {match.group().translate(_DIGITS) for text in tool_results for match in _FULL_DATE.finditer(text)}
+    said = {match.group().translate(_DIGITS) for match in _FULL_DATE.finditer(user_message)}
+    corrections = []
+
+    def fix(match: re.Match) -> str:
+        shown = match.group().translate(_DIGITS)
+        same_day = [day for day in found if day[5:] == shown[5:]]
+        if shown in found or shown in said or len(same_day) != 1:
+            return match.group()
+        corrections.append({"from": shown, "to": same_day[0]})
+        return same_day[0]
+
+    return _FULL_DATE.sub(fix, reply), corrections
 
 
 def ungrounded_numbers(reply: str, tool_results: list[str], user_message: str = "") -> list[Decimal]:

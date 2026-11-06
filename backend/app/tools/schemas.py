@@ -61,7 +61,7 @@ TOOL_SCHEMAS = [
         "category": _CATEGORY_OPT,
     }, ("month_a", "month_b")),
     _tool("search_expenses", "Find expenses by meaning or category word (shop, person, item), newest first.", {
-        "query": {"type": "string"}, "period": _SEARCH_PERIOD, **_RANGE, "limit": _LIMIT,
+        "query": {"type": "string"}, "period": _SEARCH_PERIOD, **_RANGE,
     }, ("query",)),
     _tool("check_budget", "Spent, limit and remaining per category in a month.", {
         "category": {"type": "string", "description": "category; omit for all"},

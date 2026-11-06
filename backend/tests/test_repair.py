@@ -1,4 +1,5 @@
-"""One repair attempt for numbers the tool results do not support (§6.9), and numbers from the user's message."""
+"""One repair attempt for numbers the tool results do not support (§6.9), numbers from the user's message, and the
+year corrected in code before the check."""
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -9,6 +10,7 @@ from app.db.models import Message, ToolLog
 from app.llm.client import LLMRateLimitError
 from app.services import expenses
 
+from conftest import TODAY
 from fake_llm import FakeLLM, call, respond
 
 FOOD = "أكل وشرب"
@@ -135,3 +137,15 @@ def test_user_numbers_in_the_grounding_check():
     assert ungrounded_numbers("دفعت 16000", [], "فاتورة 15 ألف") == [Decimal(16000)]
     assert ungrounded_numbers("زاد 20", [], "إذا زاد 20% شو بصير") == [Decimal(20)]
     assert ungrounded_numbers("دفعت 777", []) == [Decimal(777)]
+
+
+def test_a_wrong_year_is_corrected_without_a_repair(session, member_ctx):
+    expenses.add_expense(session, member_ctx, amount=5000, category=FOOD)
+    right = TODAY.isoformat()
+    wrong = f"{TODAY.year - 2}{right[4:]}"
+    result, llm = turn(session, member_ctx, "شو آخر مصروف؟", [
+        respond(call("list_expenses", period="this_month")), respond(content=f"آخر مصروف 5,000 بتاريخ {wrong}")])
+    assert len(llm.requests) == 2 and not result.repaired and not result.ungrounded
+    assert result.reply.endswith(right) and result.year_corrected == [{"from": wrong, "to": right}]
+    logged = session.scalars(select(ToolLog).where(ToolLog.tool_name == "year_corrected")).one()
+    assert logged.arguments == {"dates": [{"from": wrong, "to": right}]}

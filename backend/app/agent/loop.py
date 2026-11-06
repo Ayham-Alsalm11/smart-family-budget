@@ -2,8 +2,9 @@
 
 One turn = at most `max_steps` LLM steps. Tool calls of one step run in order; invalid ones are not
 executed and their error goes back to the model; `ask_clarification` and `confirmation_required` end the
-turn. An empty reply is retried once. Every LLM attempt goes to `llm_calls`, every tool call to `tool_log`, and the user message and the reply
-to `messages`. Earlier turns reach the model through `agent/memory.py` (§6.8). A yes or no to a pending action
+turn. An empty reply is retried once. A year the model got wrong is corrected in code before the numbers are checked
+(§6.9). Every LLM attempt goes to `llm_calls`, every tool call to `tool_log`, and the user message and the reply to
+`messages`. Earlier turns reach the model through `agent/memory.py` (§6.8). A yes or no to a pending action
 never reaches the model at all (§6.5, `agent/confirm.py`).
 """
 import json
@@ -16,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.agent.confirm import ConfirmationResult, answer_pending, preview_text, waiting_for_an_answer
 from app.agent.context import ToolContext
-from app.agent.grounding import ungrounded_numbers
+from app.agent.grounding import correct_years, ungrounded_numbers
 from app.agent.memory import known_expense_ids, linked_source_text, memory_for_model, recent_messages
 from app.agent.prompts import build_system_prompt
 from app.db.models import Family, LlmCall, Message, ToolLog
@@ -87,6 +88,7 @@ class TurnResult:
     repaired: bool = False  # a repair was attempted (§6.9)
     first_reply: str | None = None  # the reply before the repair
     first_ungrounded: list[str] = field(default_factory=list)
+    year_corrected: list[dict] = field(default_factory=list)  # dates fixed in code (§6.9), each {"from", "to"}
     message_id: int | None = None
     error: str | None = None
 
@@ -221,7 +223,13 @@ def run_turn(
                 # The empty message itself stays out of the conversation: there is nothing in it to answer.
                 messages.append({"role": "user", "content": EMPTY_REPLY_REQUEST})
                 continue
-            turn.reply = text or REPLY_EMPTY
+            turn.reply, corrected = correct_years(text or REPLY_EMPTY, tool_texts, message)
+            if corrected:
+                turn.year_corrected.extend(corrected)
+                session.add(ToolLog(
+                    message_id=ctx.message_id, family_id=ctx.family_id, member_id=ctx.member_id, step=step,
+                    tool_name="year_corrected", arguments={"dates": corrected}, result=None, status="ok", model=model,
+                ))
             flagged = _ungrounded(turn.reply, tool_texts, message)
             if flagged and options.grounding_repair and not turn.repaired and step < max_steps:
                 turn.repaired, turn.first_reply, turn.first_ungrounded = True, turn.reply, flagged

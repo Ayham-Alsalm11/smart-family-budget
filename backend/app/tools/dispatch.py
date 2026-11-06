@@ -162,7 +162,7 @@ def _search_expenses(args: A.SearchExpenses, ctx: ToolContext, deps: ToolDeps) -
                       {"date_key": {"$lte": int(span.end.strftime("%Y%m%d"))}}]}
     try:
         vector = deps.embedder.embed(args.query)
-        # A fixed number, whatever the model asks for: with limit=1 the closest meaning hid the newest match (S4).
+        # A fixed number, and the model has no say in it: with limit=1 the closest meaning hid the newest match (S4).
         hits = deps.vector_store.query("expenses", ctx, vector, n_results=SEARCH_MEANING_CANDIDATES, where=where)
     except Exception as exc:
         log.warning("search_expenses failed: %s", exc)

@@ -188,7 +188,7 @@ def _turn_record(number: int, text: str, turn: TurnResult, memory: list[dict], s
                                "error": c["error"]} for c in turn.llm_calls if c["status"] == "rate_limited"],
         "first_call_prompt_tokens": next((c["tokens"]["prompt"] for c in turn.llm_calls if c["tokens"]["prompt"]), None),
         "memory_messages": len(memory), "repaired": turn.repaired, "first_reply": turn.first_reply,
-        "first_ungrounded": turn.first_ungrounded, "ungrounded": turn.ungrounded,
+        "first_ungrounded": turn.first_ungrounded, "ungrounded": turn.ungrounded, "year_corrected": turn.year_corrected,
         "waited_s": round(sum(c.get("waited_ms", 0) for c in turn.llm_calls) / 1000, 1), "seconds": seconds,
         "pending_action": json.loads(dumps(turn.pending_action)), "error": turn.error, "checks": checks,
         "passed": all(c["ok"] for c in checks), "judgement": None,

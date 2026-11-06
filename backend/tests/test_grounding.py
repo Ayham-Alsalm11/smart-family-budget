@@ -1,8 +1,8 @@
-"""Grounding cases taken from the first token measurement of step 5a (§6.9)."""
+"""Grounding cases taken from the first token measurement of step 5a, and the year correction (§6.9)."""
 import json
 from decimal import Decimal
 
-from app.agent.grounding import shown_numbers, ungrounded_numbers
+from app.agent.grounding import correct_years, shown_numbers, ungrounded_numbers
 
 BUDGET = json.dumps({"ok": True, "data": {"month": "2026-11", "categories": [
     {"category": "أكل وشرب", "spent": 26000, "limit": 100000, "remaining": 74000, "percent_used": 26.0},
@@ -54,3 +54,34 @@ def test_years_only_from_dates_in_results():
 def test_invented_numbers_are_still_flagged():
     assert flagged("صرفت ١٢٬٣٤٥ ليرة", EXPENSES) == [Decimal(12345)]
     assert flagged("بتوفر 5000 بالشهر", BUDGET) == [Decimal(5000)]
+
+
+# ---------- correct_years ----------
+
+LISTED = json.dumps({"expenses": [{"id": 3, "date": "2026-11-04"}, {"id": 2, "date": "2026-10-02"}]})
+
+
+def test_a_wrong_year_takes_the_year_of_the_results():
+    reply, corrected = correct_years("دفعت 5000 بتاريخ 2024-11-04", [LISTED])
+    assert reply == "دفعت 5000 بتاريخ 2026-11-04"
+    assert corrected == [{"from": "2024-11-04", "to": "2026-11-04"}]
+
+
+def test_arabic_digits_in_a_wrong_date():
+    reply, corrected = correct_years("بتاريخ ٢٠٢٤-١١-٠٤", [LISTED])
+    assert reply == "بتاريخ 2026-11-04" and corrected[0]["from"] == "2024-11-04"
+
+
+def test_a_right_date_and_an_unknown_day_stay():
+    text = "2026-11-04 و 2024-03-09"
+    assert correct_years(text, [LISTED]) == (text, [])
+
+
+def test_a_date_the_user_wrote_stays():
+    text = "ما في شي بتاريخ 2024-11-04"
+    assert correct_years(text, [LISTED], "شو صرفنا بـ 2024-11-04؟") == (text, [])
+
+
+def test_the_same_day_under_two_years_stays():
+    both = json.dumps({"expenses": [{"date": "2026-11-04"}, {"date": "2025-11-04"}]})
+    assert correct_years("2024-11-04", [both]) == ("2024-11-04", [])

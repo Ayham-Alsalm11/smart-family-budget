@@ -75,7 +75,6 @@ class SearchExpenses(Arguments):
     period: str | None = None
     start_date: str | None = None
     end_date: str | None = None
-    limit: int = Field(5, ge=1, le=20)
 
 
 class CheckBudget(Arguments):

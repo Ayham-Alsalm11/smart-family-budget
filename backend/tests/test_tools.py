@@ -122,12 +122,18 @@ def add_for_search(session, ctx, embedder, store, days_ago, amount=1000):
                                 embedder=embedder, vector_store=store)["id"]
 
 
-@pytest.mark.parametrize("limit", [1, 5, 20])
-def test_search_always_takes_ten_by_meaning_whatever_the_limit(session, manager_ctx, fake_embedder, fake_store, limit):
+def test_search_always_takes_ten_by_meaning(session, manager_ctx, fake_embedder, fake_store):
     for days in range(12):
         add_for_search(session, manager_ctx, fake_embedder, fake_store, days)
-    found = run(session, manager_ctx, "search_expenses", fake_embedder, fake_store, query="شي منسي", limit=limit)
+    found = run(session, manager_ctx, "search_expenses", fake_embedder, fake_store, query="شي منسي")
     assert len(found.data["matches"]) == 10
+
+
+def test_search_has_no_limit_any_more(session, manager_ctx, fake_embedder, fake_store):
+    schema = next(s for s in TOOL_SCHEMAS if s["function"]["name"] == "search_expenses")
+    assert "limit" not in schema["function"]["parameters"]["properties"]
+    refused = run(session, manager_ctx, "search_expenses", fake_embedder, fake_store, query="شي", limit=3)
+    assert refused.code == "invalid_args"
 
 
 def add_without_vector(session, ctx, days_ago, category="بنزين ومواصلات", amount=1000):
