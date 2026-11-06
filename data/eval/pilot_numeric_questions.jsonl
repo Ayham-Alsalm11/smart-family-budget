@@ -1,0 +1,10 @@
+{"id": "P01", "type": "total_this_month", "question": "قديش صرفنا هالشهر؟", "params": {}, "source": "pilot"}
+{"id": "P02", "type": "category_this_month", "question": "قديش صرفنا عالأكل والشرب هالشهر؟", "params": {"category": "أكل وشرب"}, "source": "pilot"}
+{"id": "P03", "type": "total_last_month", "question": "قديش كان مصروفنا الشهر الماضي؟", "params": {}, "source": "pilot"}
+{"id": "P04", "type": "category_last_month", "question": "قديش دفعنا عالبنزين والمواصلات الشهر اللي فات؟", "params": {"category": "بنزين ومواصلات"}, "source": "pilot"}
+{"id": "P05", "type": "total_named_month", "question": "قديش صرفنا بشهر تموز؟", "params": {"month": 7}, "source": "pilot"}
+{"id": "P06", "type": "difference_this_last", "question": "قديش الفرق بين مصروف هالشهر ومصروف الشهر الماضي؟", "params": {}, "source": "pilot"}
+{"id": "P07", "type": "budget_remaining", "question": "قديش باقيلنا من ميزانية الأكل والشرب هالشهر؟", "params": {"category": "أكل وشرب"}, "source": "pilot"}
+{"id": "P08", "type": "top_category", "question": "شو أكتر فئة صرفنا عليها هالشهر وقديش مبلغها؟", "params": {}, "source": "pilot"}
+{"id": "P09", "type": "category_last_3_months", "question": "قديش صرفنا عالفواتير بآخر تلات شهور؟", "params": {"category": "فواتير"}, "source": "pilot"}
+{"id": "P10", "type": "total_this_week", "question": "قديش صرفنا هالأسبوع؟", "params": {}, "source": "pilot"}
