@@ -30,3 +30,6 @@ backend/data/
 web/node_modules/
 web/dist/
 .pytest_cache/
+
+# Evaluation: generated databases and ChromaDB (results/ stays tracked)
+data/eval/generated/
