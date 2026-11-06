@@ -5,10 +5,13 @@ Groq API + Llama 3.3 70B — مع retry و timeout محسّن
 import json, requests, time
 from datetime import date, timedelta
 from src.llm.prompts import EXPENSE_EXTRACTION_PROMPT
+# GP2: environment override for RQ2 (§3.1). Without this variable the behaviour is unchanged.
+from config import GROQ_MODEL, REASONING_EFFORT
 
 
 class ExpenseParser:
-    def __init__(self, api_key: str, model: str = "llama-3.3-70b-versatile"):
+    # GP2: environment override for RQ2 (§3.1). Without this variable the behaviour is unchanged.
+    def __init__(self, api_key: str, model: str = GROQ_MODEL):
         self.api_key = api_key
         self.model = model
         self.base_url = "https://api.groq.com/openai/v1/chat/completions"
@@ -28,6 +31,10 @@ class ExpenseParser:
             "temperature": 0.1,
             "max_tokens": 200
         }
+        # GP2: environment override for RQ2 (§3.1). Without this variable the behaviour is unchanged.
+        if REASONING_EFFORT:
+            # GP2: environment override for RQ2 (§3.1). Without this variable the behaviour is unchanged.
+            payload["reasoning_effort"] = REASONING_EFFORT
 
         for attempt in range(max_retries):
             try:

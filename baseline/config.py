@@ -14,7 +14,10 @@ DATABASE_URL = f"sqlite:///{DB_PATH}"
 
 # === LLM (Groq API) ===
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "YOUR_API_KEY_HERE")
-GROQ_MODEL = "llama-3.3-70b-versatile"
+# GP2: environment override for RQ2 (§3.1). Without this variable the behaviour is unchanged.
+GROQ_MODEL = os.getenv("BASELINE_LLM_MODEL", "llama-3.3-70b-versatile")
+# GP2: environment override for RQ2 (§3.1). Without this variable the behaviour is unchanged.
+REASONING_EFFORT = os.getenv("BASELINE_REASONING_EFFORT")
 GROQ_BASE_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 # === Embedding (Ollama + BGE-M3) ===

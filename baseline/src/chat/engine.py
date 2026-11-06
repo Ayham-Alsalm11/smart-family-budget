@@ -9,6 +9,8 @@ from src.llm.prompts import ADVICE_PROMPT, QUERY_RESPONSE_PROMPT, CHAT_PROMPT
 from src.rag.retriever import FinancialRetriever
 from src.analysis.spending import SpendingAnalyzer
 from src.database.crud import add_expense
+# GP2: environment override for RQ2 (§3.1). Without this variable the behaviour is unchanged.
+from config import GROQ_MODEL, REASONING_EFFORT
 
 
 class ChatEngine:
@@ -99,13 +101,18 @@ class ChatEngine:
 
     def _call_llm(self, system_prompt: str, user_message: str) -> str:
         payload = {
-            "model": "llama-3.3-70b-versatile",
+            # GP2: environment override for RQ2 (§3.1). Without this variable the behaviour is unchanged.
+            "model": GROQ_MODEL,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message}
             ],
             "temperature": 0.7, "max_tokens": 500
         }
+        # GP2: environment override for RQ2 (§3.1). Without this variable the behaviour is unchanged.
+        if REASONING_EFFORT:
+            # GP2: environment override for RQ2 (§3.1). Without this variable the behaviour is unchanged.
+            payload["reasoning_effort"] = REASONING_EFFORT
         response = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
