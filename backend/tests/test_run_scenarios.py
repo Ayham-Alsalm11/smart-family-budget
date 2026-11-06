@@ -261,6 +261,27 @@ def test_a_preview_after_a_stale_yes_must_be_of_the_right_expense(session, manag
     assert checks(session, manager_ctx, expect, turn_with(), refs), "no preview at all is fine"
 
 
+def test_an_empty_reply_is_recorded_with_what_it_held(harness):
+    def reply(message):
+        body = {"choices": [{"message": message, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 20}}
+        return httpx.Response(200, json=body)
+
+    answers = [reply({"role": "assistant", "content": None, "reasoning": "ab", "extra": 1})]
+
+    def handler(_request):
+        return answers.pop() if answers else reply({"role": "assistant", "content": "أهلا"})
+
+    client = GroqClient("k", transport=httpx.MockTransport(handler), sleep=lambda _seconds: None, jitter=lambda: 0.0)
+    assert harness.run(["--models", "main"], client) == 0
+    run = results(harness)[1]["runs"]["main"]
+    turn = run["scenarios"][0]["turns"][0]
+    assert turn["empty_retried"] and turn["reply"] == "أهلا" and turn["model_calls"] == 2
+    assert turn["calls"][0]["empty_details"] == {"finish_reason": "stop", "content_length": 0, "reasoning_length": 2,
+                                                 "unexpected_fields": ["extra"]}
+    assert run["summary"]["empty_replies"] == 1
+
+
 def test_the_scenario_file_is_loaded_from_the_repository():
     data = json.loads(run_scenarios.SCENARIOS.read_text(encoding="utf-8"))
     assert [s["id"] for s in data["scenarios"]] == [f"S{n}" for n in range(1, 11)]

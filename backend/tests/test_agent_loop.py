@@ -1,9 +1,13 @@
 """The ReAct loop with a scripted model: steps, limits, logging and tool rejection (§6.1, §6.2)."""
+import json
+
 import httpx
 from sqlalchemy import select
 
 from app.agent.grounding import extract_numbers, ungrounded_numbers
-from app.agent.loop import REPLY_LLM_ERROR, REPLY_STEP_LIMIT, REPLY_TOOL_REJECTED, REPLY_TRUNCATED, run_turn
+from app.agent.loop import (
+    EMPTY_REPLY_REQUEST, REPLY_EMPTY, REPLY_LLM_ERROR, REPLY_STEP_LIMIT, REPLY_TOOL_REJECTED, REPLY_TRUNCATED, run_turn,
+)
 from app.db.models import Expense, LlmCall, Message, PendingAction, ToolLog
 from app.llm.client import GroqClient, LLMRateLimitError, LLMToolValidationError, ToolCall
 from app.services import expenses
@@ -152,6 +156,94 @@ def test_provider_rejection_gives_up_after_two_corrections(session, member_ctx):
     assert len(llm.requests) == 3
     assert [log.status for log in session.scalars(select(ToolLog))] == ["invalid_args"] * 3
     assert session.scalars(select(Message).where(Message.role == "assistant")).one().content == REPLY_TOOL_REJECTED
+
+
+# ---------- empty replies ----------
+
+EMPTY = respond(content=None)
+
+
+def test_an_empty_reply_is_asked_for_again_once(session, member_ctx):
+    turn, llm = run(session, member_ctx, "مرحبا", [EMPTY, respond(content="أهلا")])
+    assert (turn.reply, turn.ended_by, turn.llm_steps, turn.empty_retried) == ("أهلا", "reply", 2, True)
+    assert llm.requests[1][-1] == {"role": "user", "content": EMPTY_REPLY_REQUEST}
+    assert llm.requests[1][-2] == {"role": "user", "content": "مرحبا"}, "the empty message is not in the conversation"
+
+
+def test_the_retry_may_call_a_tool(session, member_ctx):
+    turn, _ = run(session, member_ctx, "كم؟", [EMPTY, respond(call("get_total", period="this_month")), respond(content="صفر")])
+    assert [s.tool for s in turn.steps] == ["get_total"] and turn.reply == "صفر"
+
+
+def test_empty_twice_keeps_the_current_reply(session, member_ctx):
+    turn, llm = run(session, member_ctx, "مرحبا", [EMPTY, EMPTY, respond(content="لا يجب أن يصل")])
+    assert (turn.reply, turn.ended_by) == (REPLY_EMPTY, "reply") and len(llm.requests) == 2 and len(llm.responses) == 1
+
+
+def test_only_one_retry_in_a_turn(session, member_ctx):
+    turn, llm = run(session, member_ctx, "كم؟", [EMPTY, respond(call("get_total", period="this_month")), EMPTY,
+                                                 respond(content="لا يجب أن يصل")])
+    assert turn.reply == REPLY_EMPTY and len(llm.requests) == 3
+
+
+def test_no_retry_on_the_last_step(session, member_ctx):
+    turn, llm = run(session, member_ctx, "مرحبا", [EMPTY], max_steps=1)
+    assert turn.reply == REPLY_EMPTY and not turn.empty_retried and len(llm.requests) == 1
+
+
+def test_the_retry_counts_in_the_step_limit(session, member_ctx):
+    turn, llm = run(session, member_ctx, "كم؟", [EMPTY, respond(call("get_total", period="this_month"))], max_steps=2)
+    assert (turn.ended_by, turn.reply) == ("step_limit", REPLY_STEP_LIMIT) and len(llm.requests) == 2
+
+
+def test_white_space_is_an_empty_reply(session, member_ctx):
+    turn, llm = run(session, member_ctx, "مرحبا", [respond(content="  \n "), respond(content="أهلا")])
+    assert turn.reply == "أهلا" and len(llm.requests) == 2
+
+
+def test_an_empty_answer_to_a_repair_keeps_the_first_reply(session, member_ctx):
+    turn, _ = run(session, member_ctx, "كم؟", [respond(content="صرفت 777"), EMPTY, EMPTY])
+    assert (turn.reply, turn.ended_by, turn.repaired, turn.empty_retried) == ("صرفت 777", "reply", True, True)
+    assert turn.ungrounded == ["777"]
+
+
+def groq_replies(*messages, finish_reason="stop"):
+    queue = list(messages)
+
+    def handler(_request):
+        body = {"choices": [{"message": queue.pop(0), "finish_reason": finish_reason}],
+                "usage": {"prompt_tokens": 1700, "completion_tokens": 30,
+                          "completion_tokens_details": {"reasoning_tokens": 5}}}
+        return httpx.Response(200, json=body)
+
+    return GroqClient("k", transport=httpx.MockTransport(handler))
+
+
+def test_what_an_empty_reply_held_is_saved_in_llm_calls(session, member_ctx):
+    empty = {"role": "assistant", "content": "", "reasoning": "abcd", "channel": "commentary", "annotations": []}
+    client = groq_replies(empty, {"role": "assistant", "content": "أهلا"})
+    turn = run_turn(session, member_ctx, "مرحبا", client, model="fake-model")
+    assert turn.reply == "أهلا"
+    first, second = session.scalars(select(LlmCall).order_by(LlmCall.id)).all()
+    assert (first.status, first.http_status, first.completion_tokens) == ("empty", 200, 30)
+    assert json.loads(first.error) == {"finish_reason": "stop", "content_length": 0, "reasoning_length": 4,
+                                       "unexpected_fields": ["annotations", "channel"]}
+    assert (second.status, second.error) == ("ok", None)
+    assert turn.llm_calls[0]["status"] == "empty"
+
+
+def test_white_space_length_is_saved(session, member_ctx):
+    client = groq_replies({"role": "assistant", "content": "  "}, {"role": "assistant", "content": "أهلا"})
+    run_turn(session, member_ctx, "مرحبا", client, model="fake-model")
+    assert json.loads(session.scalars(select(LlmCall)).first().error)["content_length"] == 2
+
+
+def test_a_tool_call_without_content_is_not_empty(session, member_ctx):
+    tool_call = {"id": "c1", "type": "function", "function": {"name": "get_total", "arguments": '{"period": "this_month"}'}}
+    client = groq_replies({"role": "assistant", "content": None, "tool_calls": [tool_call]},
+                          {"role": "assistant", "content": "تم"})
+    turn = run_turn(session, member_ctx, "كم؟", client, model="fake-model")
+    assert not turn.empty_retried and {c.status for c in session.scalars(select(LlmCall))} == {"ok"}
 
 
 def test_a_cut_reply_is_recorded_and_explained(session, member_ctx):

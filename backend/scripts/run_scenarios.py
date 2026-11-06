@@ -178,9 +178,12 @@ def _turn_record(number: int, text: str, turn: TurnResult, memory: list[dict], s
     return {
         "turn": number, "text": text, "reply": turn.reply, "ended_by": turn.ended_by,
         "tools": [{"tool": s.tool, "arguments": s.arguments, "status": s.status} for s in turn.steps],
-        "model_calls": sum(1 for c in turn.llm_calls if c["status"] in ("ok", "truncated")), "tokens": turn.usage.as_dict(),
+        "model_calls": sum(1 for c in turn.llm_calls if c["status"] in ("ok", "empty", "truncated")),
+        "tokens": turn.usage.as_dict(), "empty_retried": turn.empty_retried,
         "calls": [{"step": c["step"], "attempt": c["attempt"], "status": c["status"], "waited_ms": c["waited_ms"],
-                   "latency_ms": c["latency_ms"], **c["tokens"]} for c in turn.llm_calls],
+                   "latency_ms": c["latency_ms"], **c["tokens"],
+                   **({"empty_details": json.loads(c["error"])} if c["status"] == "empty" else {})}
+                  for c in turn.llm_calls],
         "rate_limit_events": [{"step": c["step"], "attempt": c["attempt"], "retry_after": c["retry_after"],
                                "error": c["error"]} for c in turn.llm_calls if c["status"] == "rate_limited"],
         "first_call_prompt_tokens": next((c["tokens"]["prompt"] for c in turn.llm_calls if c["tokens"]["prompt"]), None),
@@ -250,6 +253,7 @@ def _summary(run: dict) -> dict:
         "waited_s": round(sum(c["waited_ms"] for c in calls) / 1000, 1),
         "rate_limited_attempts": sum(1 for c in calls if c["status"] == "rate_limited"),
         "truncated_replies": sum(1 for c in calls if c["status"] == "truncated"),
+        "empty_replies": sum(1 for c in calls if c["status"] == "empty"),
         "largest_completion": max((c["completion"] for c in calls), default=0),
         "prompt_tokens_first_call_without_memory": round(sum(first) / len(first)) if first else None,
         "prompt_tokens_first_call_with_memory": round(sum(later) / len(later)) if later else None,

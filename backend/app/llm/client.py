@@ -8,6 +8,8 @@
   of its own usage and the `x-ratelimit-*` headers, so that 429s are avoided rather than retried.
   Each request reserves its prompt estimate plus the whole of `max_tokens`.
 - A reply cut by `max_tokens` is an error (`LLMTruncatedError`), not a short answer.
+- A reply with no content and no tool call is reported as `empty`, with what the response held: the
+  raw body is not kept, so this is the only trace of why it happened (§6.2).
 - One client serves every API request: its shared state is guarded by locks, and a waiting
   request sleeps outside them.
 - Every attempt is reported through `on_attempt`; the agent loop writes it to `llm_calls`.
@@ -27,6 +29,7 @@ import httpx
 GROQ_URL = "https://api.groq.com/openai/v1"
 MAX_RETRY_WAIT = 60.0  # a longer retry-after means the daily quota, not the minute
 _PRIVATE_HEADERS = {"authorization", "cookie", "set-cookie"}
+_KNOWN_MESSAGE_FIELDS = {"role", "content", "tool_calls", "reasoning"}
 _UNSET: Any = object()
 
 
@@ -129,7 +132,7 @@ class ToolCall:
 class Attempt:
     model: str
     attempt: int
-    status: str  # ok, timeout, server_error, rate_limited, request_error, bad_response, truncated
+    status: str  # ok, empty, timeout, server_error, rate_limited, request_error, bad_response, truncated
     http_status: int | None
     latency_ms: int
     usage: Usage | None = None
@@ -148,6 +151,7 @@ class LLMResponse:
     attempts: int
     assistant_message: dict  # to append to the conversation before the tool results
     finish_reason: str | None = None
+    empty_details: dict | None = None  # set when the reply has no content and no tool call
 
 
 # ---------- rate limiting ----------
@@ -357,6 +361,14 @@ def _error_code(response: httpx.Response) -> str | None:
         return None
 
 
+def _empty_details(choice: dict) -> dict:
+    """What can still explain an empty reply. `unexpected_fields` shows text sent where the client does not look."""
+    message = choice["message"]
+    return {"finish_reason": choice.get("finish_reason"), "content_length": len(message.get("content") or ""),
+            "reasoning_length": len(message.get("reasoning") or ""),
+            "unexpected_fields": sorted(set(message) - _KNOWN_MESSAGE_FIELDS)}
+
+
 def _rate_limit_text(response: httpx.Response) -> str:
     """The error and all the response headers, so that the reason of a 429 can be read later."""
     headers = {k: v for k, v in response.headers.items() if k.lower() not in _PRIVATE_HEADERS}
@@ -482,8 +494,9 @@ class GroqClient:
                         limiter.observe(raw_prompt, usage.prompt_tokens)
                         if result.finish_reason != "length":
                             if on_attempt:
-                                on_attempt(Attempt(model, attempt, "ok", 200, result.latency_ms, usage,
-                                                   waited_ms=waited_ms))
+                                details = result.empty_details
+                                on_attempt(Attempt(model, attempt, "empty" if details else "ok", 200, result.latency_ms,
+                                                   usage, json.dumps(details) if details else None, waited_ms=waited_ms))
                             return result
                         error = LLMTruncatedError(f"the reply was cut at max_tokens={self.max_tokens}", 200)
                         error.usage = usage
@@ -515,8 +528,9 @@ class GroqClient:
         choice = body["choices"][0]
         reader = _json_mode_message if self.tool_mode == "json" else _native_message
         content, calls, assistant = reader(choice["message"])
+        empty = None if calls or (content or "").strip() else _empty_details(choice)
         return LLMResponse(model, content, calls, Usage.from_api(body.get("usage")), latency_ms, attempts, assistant,
-                           choice.get("finish_reason"))
+                           choice.get("finish_reason"), empty)
 
     def close(self) -> None:
         self._http.close()

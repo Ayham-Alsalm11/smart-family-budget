@@ -2,7 +2,7 @@
 
 One turn = at most `max_steps` LLM steps. Tool calls of one step run in order; invalid ones are not
 executed and their error goes back to the model; `ask_clarification` and `confirmation_required` end the
-turn. Every LLM attempt goes to `llm_calls`, every tool call to `tool_log`, and the user message and the reply
+turn. An empty reply is retried once. Every LLM attempt goes to `llm_calls`, every tool call to `tool_log`, and the user message and the reply
 to `messages`. Earlier turns reach the model through `agent/memory.py` (§6.8). A yes or no to a pending action
 never reaches the model at all (§6.5, `agent/confirm.py`).
 """
@@ -33,6 +33,7 @@ MAX_TOOL_CORRECTIONS = 2  # provider-side rejections (tool_use_failed) the model
 _REJECTED_TOOL = re.compile(r"for tool (\w+)")
 _REJECTION_PREFIX = re.compile(r"^(?:tool_use_failed:\s*)?(?:tool call validation failed:\s*)+", re.IGNORECASE)
 SUMMARY_MAX_IDS = 5
+EMPTY_REPLY_REQUEST = "Your last message was empty. Reply to the user or call a tool."
 REPAIR_REQUEST = ("Your reply has numbers that are not in the tool results: {numbers}. Rewrite it using only numbers "
                   "from the tool results, or call a tool to get them. If a number is not available, leave it out.")
 
@@ -82,6 +83,7 @@ class TurnResult:
     llm_calls: list[dict] = field(default_factory=list)
     llm_steps: int = 0
     ungrounded: list[str] = field(default_factory=list)  # in the final reply
+    empty_retried: bool = False  # the model was asked again after an empty reply (§6.2)
     repaired: bool = False  # a repair was attempted (§6.9)
     first_reply: str | None = None  # the reply before the repair
     first_ungrounded: list[str] = field(default_factory=list)
@@ -213,7 +215,13 @@ def run_turn(
         turn.usage += response.usage
 
         if not response.tool_calls:
-            turn.reply = (response.content or "").strip() or REPLY_EMPTY
+            text = (response.content or "").strip()
+            if not text and not turn.empty_retried and step < max_steps:
+                turn.empty_retried = True
+                # The empty message itself stays out of the conversation: there is nothing in it to answer.
+                messages.append({"role": "user", "content": EMPTY_REPLY_REQUEST})
+                continue
+            turn.reply = text or REPLY_EMPTY
             flagged = _ungrounded(turn.reply, tool_texts, message)
             if flagged and options.grounding_repair and not turn.repaired and step < max_steps:
                 turn.repaired, turn.first_reply, turn.first_ungrounded = True, turn.reply, flagged
@@ -257,7 +265,7 @@ def run_turn(
     else:
         turn.reply, turn.ended_by = REPLY_STEP_LIMIT, "step_limit"
 
-    if turn.repaired and turn.ended_by in ("step_limit", "llm_error", "tool_rejected"):
+    if turn.repaired and (turn.ended_by in ("step_limit", "llm_error", "tool_rejected") or turn.reply == REPLY_EMPTY):
         # The turn's work is done and only the repair failed: the first reply is better than an apology.
         turn.reply, turn.ended_by, turn.error = turn.first_reply, "reply", None
     if turn.ended_by == "reply":
