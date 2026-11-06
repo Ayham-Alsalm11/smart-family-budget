@@ -1,0 +1,39 @@
+{
+ "run_id": "rq2_20261106_163418",
+ "model": "openai/gpt-oss-120b",
+ "reasoning_effort": "low",
+ "git_commit": "fc7e0e9b5c53d074238a8861591e3425eb7b23b7",
+ "date": "2026-11-06",
+ "questions_file": "data/eval/pilot_numeric_questions.jsonl",
+ "questions_sha256": "61632f5431d0ee31ab5632e7922cd158203025237b3551ec0bc7510814437fb6",
+ "agent": {
+  "memory_messages": 0,
+  "corrections_enabled": false,
+  "max_tokens": 800,
+  "max_steps": 6,
+  "grounding_repair": true
+ },
+ "gp1": {
+  "max_tokens": {
+   "parser": 200,
+   "engine": 500
+  }
+ },
+ "segments": [
+  {
+   "today": "2026-11-06",
+   "records_sha256": "dfa784dd2ed350b2ea7d04c778331e517a1cb4c850510de385d17f4939b39f07",
+   "seed": 42,
+   "expenses": 297,
+   "git_commit": "fc7e0e9b5c53d074238a8861591e3425eb7b23b7"
+  }
+ ],
+ "rate_limits": {
+  "x-ratelimit-limit-requests": "1000",
+  "x-ratelimit-limit-tokens": "8000",
+  "x-ratelimit-remaining-requests": "941",
+  "x-ratelimit-remaining-tokens": "2918",
+  "x-ratelimit-reset-requests": "1h24m57.599s",
+  "x-ratelimit-reset-tokens": "38.115s"
+ }
+}

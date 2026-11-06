@@ -1,0 +1,176 @@
+{
+ "agent": {
+  "items": 10,
+  "strict": 10,
+  "lenient": 10,
+  "strict_accuracy": 1.0,
+  "lenient_accuracy": 1.0,
+  "failures": 0,
+  "api_failure_rate": 0.0,
+  "replies_without_a_number": 0,
+  "mean_seconds": 2.33,
+  "mean_waited_s": 6.5,
+  "requests_per_question": 2.1,
+  "tokens_per_question": 3529,
+  "tokens_total": 35291,
+  "by_type": {
+   "total_this_month": {
+    "items": 1,
+    "strict": 1,
+    "lenient": 1,
+    "strict_accuracy": 1.0,
+    "lenient_accuracy": 1.0
+   },
+   "category_this_month": {
+    "items": 1,
+    "strict": 1,
+    "lenient": 1,
+    "strict_accuracy": 1.0,
+    "lenient_accuracy": 1.0
+   },
+   "total_last_month": {
+    "items": 1,
+    "strict": 1,
+    "lenient": 1,
+    "strict_accuracy": 1.0,
+    "lenient_accuracy": 1.0
+   },
+   "category_last_month": {
+    "items": 1,
+    "strict": 1,
+    "lenient": 1,
+    "strict_accuracy": 1.0,
+    "lenient_accuracy": 1.0
+   },
+   "total_named_month": {
+    "items": 1,
+    "strict": 1,
+    "lenient": 1,
+    "strict_accuracy": 1.0,
+    "lenient_accuracy": 1.0
+   },
+   "difference_this_last": {
+    "items": 1,
+    "strict": 1,
+    "lenient": 1,
+    "strict_accuracy": 1.0,
+    "lenient_accuracy": 1.0
+   },
+   "budget_remaining": {
+    "items": 1,
+    "strict": 1,
+    "lenient": 1,
+    "strict_accuracy": 1.0,
+    "lenient_accuracy": 1.0
+   },
+   "top_category": {
+    "items": 1,
+    "strict": 1,
+    "lenient": 1,
+    "strict_accuracy": 1.0,
+    "lenient_accuracy": 1.0
+   },
+   "category_last_3_months": {
+    "items": 1,
+    "strict": 1,
+    "lenient": 1,
+    "strict_accuracy": 1.0,
+    "lenient_accuracy": 1.0
+   },
+   "total_this_week": {
+    "items": 1,
+    "strict": 1,
+    "lenient": 1,
+    "strict_accuracy": 1.0,
+    "lenient_accuracy": 1.0
+   }
+  }
+ },
+ "gp1": {
+  "items": 10,
+  "strict": 4,
+  "lenient": 4,
+  "strict_accuracy": 0.4,
+  "lenient_accuracy": 0.4,
+  "failures": 1,
+  "api_failure_rate": 0.1,
+  "replies_without_a_number": 2,
+  "mean_seconds": 5.73,
+  "mean_waited_s": 0.0,
+  "requests_per_question": 2,
+  "tokens_per_question": 1727,
+  "tokens_total": 17272,
+  "by_type": {
+   "total_this_month": {
+    "items": 1,
+    "strict": 1,
+    "lenient": 1,
+    "strict_accuracy": 1.0,
+    "lenient_accuracy": 1.0
+   },
+   "category_this_month": {
+    "items": 1,
+    "strict": 1,
+    "lenient": 1,
+    "strict_accuracy": 1.0,
+    "lenient_accuracy": 1.0
+   },
+   "total_last_month": {
+    "items": 1,
+    "strict": 0,
+    "lenient": 0,
+    "strict_accuracy": 0.0,
+    "lenient_accuracy": 0.0
+   },
+   "category_last_month": {
+    "items": 1,
+    "strict": 0,
+    "lenient": 0,
+    "strict_accuracy": 0.0,
+    "lenient_accuracy": 0.0
+   },
+   "total_named_month": {
+    "items": 1,
+    "strict": 0,
+    "lenient": 0,
+    "strict_accuracy": 0.0,
+    "lenient_accuracy": 0.0
+   },
+   "difference_this_last": {
+    "items": 1,
+    "strict": 0,
+    "lenient": 0,
+    "strict_accuracy": 0.0,
+    "lenient_accuracy": 0.0
+   },
+   "budget_remaining": {
+    "items": 1,
+    "strict": 1,
+    "lenient": 1,
+    "strict_accuracy": 1.0,
+    "lenient_accuracy": 1.0
+   },
+   "top_category": {
+    "items": 1,
+    "strict": 1,
+    "lenient": 1,
+    "strict_accuracy": 1.0,
+    "lenient_accuracy": 1.0
+   },
+   "category_last_3_months": {
+    "items": 1,
+    "strict": 0,
+    "lenient": 0,
+    "strict_accuracy": 0.0,
+    "lenient_accuracy": 0.0
+   },
+   "total_this_week": {
+    "items": 1,
+    "strict": 0,
+    "lenient": 0,
+    "strict_accuracy": 0.0,
+    "lenient_accuracy": 0.0
+   }
+  }
+ }
+}

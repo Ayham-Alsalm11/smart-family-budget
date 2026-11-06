@@ -1,0 +1,458 @@
+{
+ "started": "20261106_163248",
+ "model": "openai/gpt-oss-120b",
+ "sentences": [
+  {
+   "sentence": "دفعت فاتورة الموبايل 5000",
+   "expected_amount": "5000",
+   "expected_category": "فواتير",
+   "expected_type": "expense"
+  },
+  {
+   "sentence": "اشتريت رز وزيت بـ 6000",
+   "expected_amount": "6000",
+   "expected_category": "أكل وشرب",
+   "expected_type": "expense"
+  },
+  {
+   "sentence": "رحت عأسنان دفعت 25 ألف",
+   "expected_amount": "25000",
+   "expected_category": "صحة",
+   "expected_type": "expense"
+  },
+  {
+   "sentence": "توفير هالشهر 25 ألف",
+   "expected_amount": "25000",
+   "expected_category": "ادخار",
+   "expected_type": "expense"
+  },
+  {
+   "sentence": "عبيت بنزين نص تنكة 7000",
+   "expected_amount": "7000",
+   "expected_category": "بنزين ومواصلات",
+   "expected_type": "expense"
+  },
+  {
+   "sentence": "عشا بره بـ 12000",
+   "expected_amount": "12000",
+   "expected_category": "أكل وشرب",
+   "expected_type": "expense"
+  },
+  {
+   "sentence": "كورس انجليزي 25 ألف",
+   "expected_amount": "25000",
+   "expected_category": "تعليم",
+   "expected_type": "expense"
+  },
+  {
+   "sentence": "دورة برمجة 40 ألف",
+   "expected_amount": "40000",
+   "expected_category": "تعليم",
+   "expected_type": "expense"
+  },
+  {
+   "sentence": "اشتراك OSN 10 ألف",
+   "expected_amount": "10000",
+   "expected_category": "فواتير",
+   "expected_type": "expense"
+  },
+  {
+   "sentence": "شو نصيحتك لتقليل المصاريف؟",
+   "expected_amount": "",
+   "expected_category": "",
+   "expected_type": "advice"
+  }
+ ],
+ "levels": {
+  "default": {
+   "reasoning_effort": null,
+   "items": [
+    {
+     "sentence": "دفعت فاتورة الموبايل 5000",
+     "type": "expense",
+     "amount": 5000.0,
+     "category": "فواتير",
+     "valid_json": true,
+     "crash": null,
+     "finish_reason": "stop",
+     "completion_tokens": 156,
+     "reasoning_tokens": 103,
+     "prompt_tokens": 900,
+     "content_length": 115,
+     "requests": 1,
+     "statuses": [
+      200
+     ],
+     "total_tokens": 1056
+    },
+    {
+     "sentence": "اشتريت رز وزيت بـ 6000",
+     "type": "expense",
+     "amount": 6000.0,
+     "category": "أكل وشرب",
+     "valid_json": true,
+     "crash": null,
+     "finish_reason": "stop",
+     "completion_tokens": 167,
+     "reasoning_tokens": 125,
+     "prompt_tokens": 899,
+     "content_length": 103,
+     "requests": 1,
+     "statuses": [
+      200
+     ],
+     "total_tokens": 1066
+    },
+    {
+     "sentence": "رحت عأسنان دفعت 25 ألف",
+     "type": "error",
+     "amount": null,
+     "category": null,
+     "valid_json": false,
+     "crash": null,
+     "finish_reason": "length",
+     "completion_tokens": 200,
+     "reasoning_tokens": 198,
+     "prompt_tokens": 900,
+     "content_length": 0,
+     "requests": 1,
+     "statuses": [
+      200
+     ],
+     "total_tokens": 1100
+    },
+    {
+     "sentence": "توفير هالشهر 25 ألف",
+     "type": "advice",
+     "amount": null,
+     "category": null,
+     "valid_json": true,
+     "crash": null,
+     "finish_reason": "stop",
+     "completion_tokens": 126,
+     "reasoning_tokens": 110,
+     "prompt_tokens": 898,
+     "content_length": 18,
+     "requests": 1,
+     "statuses": [
+      200
+     ],
+     "total_tokens": 1024
+    },
+    {
+     "sentence": "عبيت بنزين نص تنكة 7000",
+     "type": "error",
+     "amount": null,
+     "category": null,
+     "valid_json": false,
+     "crash": null,
+     "finish_reason": "length",
+     "completion_tokens": 200,
+     "reasoning_tokens": 172,
+     "prompt_tokens": 900,
+     "content_length": 57,
+     "requests": 1,
+     "statuses": [
+      200
+     ],
+     "total_tokens": 1100
+    },
+    {
+     "sentence": "عشا بره بـ 12000",
+     "type": "error",
+     "amount": null,
+     "category": null,
+     "valid_json": false,
+     "crash": null,
+     "finish_reason": "length",
+     "completion_tokens": 200,
+     "reasoning_tokens": 191,
+     "prompt_tokens": 898,
+     "content_length": 2,
+     "requests": 1,
+     "statuses": [
+      200
+     ],
+     "total_tokens": 1098
+    },
+    {
+     "sentence": "كورس انجليزي 25 ألف",
+     "type": "error",
+     "amount": null,
+     "category": null,
+     "valid_json": false,
+     "crash": null,
+     "finish_reason": "length",
+     "completion_tokens": 200,
+     "reasoning_tokens": 198,
+     "prompt_tokens": 897,
+     "content_length": 0,
+     "requests": 1,
+     "statuses": [
+      200
+     ],
+     "total_tokens": 1097
+    },
+    {
+     "sentence": "دورة برمجة 40 ألف",
+     "type": "expense",
+     "amount": 40000.0,
+     "category": "تعليم",
+     "valid_json": true,
+     "crash": null,
+     "finish_reason": "length",
+     "completion_tokens": 200,
+     "reasoning_tokens": 150,
+     "prompt_tokens": 898,
+     "content_length": 108,
+     "requests": 1,
+     "statuses": [
+      200
+     ],
+     "total_tokens": 1098
+    },
+    {
+     "sentence": "اشتراك OSN 10 ألف",
+     "type": "error",
+     "amount": null,
+     "category": null,
+     "valid_json": false,
+     "crash": null,
+     "finish_reason": "length",
+     "completion_tokens": 200,
+     "reasoning_tokens": 198,
+     "prompt_tokens": 897,
+     "content_length": 0,
+     "requests": 1,
+     "statuses": [
+      200
+     ],
+     "total_tokens": 1097
+    },
+    {
+     "sentence": "شو نصيحتك لتقليل المصاريف؟",
+     "type": "advice",
+     "amount": null,
+     "category": null,
+     "valid_json": true,
+     "crash": null,
+     "finish_reason": "stop",
+     "completion_tokens": 49,
+     "reasoning_tokens": 33,
+     "prompt_tokens": 902,
+     "content_length": 18,
+     "requests": 1,
+     "statuses": [
+      200
+     ],
+     "total_tokens": 951
+    }
+   ],
+   "summary": {
+    "sentences": 10,
+    "valid_json": 5,
+    "cut_at_max_tokens": 6,
+    "crashes": 0,
+    "reasoning_tokens_mean": 147.8,
+    "reasoning_tokens_max": 198,
+    "completion_tokens_max": 200,
+    "total_tokens": 10687
+   }
+  },
+  "low": {
+   "reasoning_effort": "low",
+   "items": [
+    {
+     "sentence": "دفعت فاتورة الموبايل 5000",
+     "type": "expense",
+     "amount": 5000.0,
+     "category": "فواتير",
+     "valid_json": true,
+     "crash": null,
+     "finish_reason": "stop",
+     "completion_tokens": 80,
+     "reasoning_tokens": 29,
+     "prompt_tokens": 900,
+     "content_length": 111,
+     "requests": 1,
+     "statuses": [
+      200
+     ],
+     "total_tokens": 980
+    },
+    {
+     "sentence": "اشتريت رز وزيت بـ 6000",
+     "type": "expense",
+     "amount": 6000.0,
+     "category": "أكل وشرب",
+     "valid_json": true,
+     "crash": null,
+     "finish_reason": "stop",
+     "completion_tokens": 106,
+     "reasoning_tokens": 55,
+     "prompt_tokens": 899,
+     "content_length": 112,
+     "requests": 1,
+     "statuses": [
+      200
+     ],
+     "total_tokens": 1005
+    },
+    {
+     "sentence": "رحت عأسنان دفعت 25 ألف",
+     "type": "expense",
+     "amount": 25000.0,
+     "category": "صحة",
+     "valid_json": true,
+     "crash": null,
+     "finish_reason": "stop",
+     "completion_tokens": 121,
+     "reasoning_tokens": 71,
+     "prompt_tokens": 900,
+     "content_length": 107,
+     "requests": 1,
+     "statuses": [
+      200
+     ],
+     "total_tokens": 1021
+    },
+    {
+     "sentence": "توفير هالشهر 25 ألف",
+     "type": "advice",
+     "amount": null,
+     "category": null,
+     "valid_json": true,
+     "crash": null,
+     "finish_reason": "stop",
+     "completion_tokens": 33,
+     "reasoning_tokens": 17,
+     "prompt_tokens": 898,
+     "content_length": 18,
+     "requests": 1,
+     "statuses": [
+      200
+     ],
+     "total_tokens": 931
+    },
+    {
+     "sentence": "عبيت بنزين نص تنكة 7000",
+     "type": "expense",
+     "amount": 7000.0,
+     "category": "بنزين ومواصلات",
+     "valid_json": true,
+     "crash": null,
+     "finish_reason": "stop",
+     "completion_tokens": 100,
+     "reasoning_tokens": 45,
+     "prompt_tokens": 900,
+     "content_length": 124,
+     "requests": 1,
+     "statuses": [
+      200
+     ],
+     "total_tokens": 1000
+    },
+    {
+     "sentence": "عشا بره بـ 12000",
+     "type": "expense",
+     "amount": 12000.0,
+     "category": "أكل وشرب",
+     "valid_json": true,
+     "crash": null,
+     "finish_reason": "stop",
+     "completion_tokens": 98,
+     "reasoning_tokens": 47,
+     "prompt_tokens": 898,
+     "content_length": 108,
+     "requests": 1,
+     "statuses": [
+      200
+     ],
+     "total_tokens": 996
+    },
+    {
+     "sentence": "كورس انجليزي 25 ألف",
+     "type": "expense",
+     "amount": 25000.0,
+     "category": "تعليم",
+     "valid_json": true,
+     "crash": null,
+     "finish_reason": "stop",
+     "completion_tokens": 91,
+     "reasoning_tokens": 42,
+     "prompt_tokens": 897,
+     "content_length": 110,
+     "requests": 1,
+     "statuses": [
+      200
+     ],
+     "total_tokens": 988
+    },
+    {
+     "sentence": "دورة برمجة 40 ألف",
+     "type": "expense",
+     "amount": 40000.0,
+     "category": "تعليم",
+     "valid_json": true,
+     "crash": null,
+     "finish_reason": "stop",
+     "completion_tokens": 122,
+     "reasoning_tokens": 72,
+     "prompt_tokens": 898,
+     "content_length": 108,
+     "requests": 1,
+     "statuses": [
+      200
+     ],
+     "total_tokens": 1020
+    },
+    {
+     "sentence": "اشتراك OSN 10 ألف",
+     "type": "expense",
+     "amount": 10000.0,
+     "category": "ترفيه",
+     "valid_json": true,
+     "crash": null,
+     "finish_reason": "stop",
+     "completion_tokens": 105,
+     "reasoning_tokens": 55,
+     "prompt_tokens": 897,
+     "content_length": 108,
+     "requests": 1,
+     "statuses": [
+      200
+     ],
+     "total_tokens": 1002
+    },
+    {
+     "sentence": "شو نصيحتك لتقليل المصاريف؟",
+     "type": "advice",
+     "amount": null,
+     "category": null,
+     "valid_json": true,
+     "crash": null,
+     "finish_reason": "stop",
+     "completion_tokens": 29,
+     "reasoning_tokens": 13,
+     "prompt_tokens": 902,
+     "content_length": 18,
+     "requests": 1,
+     "statuses": [
+      200
+     ],
+     "total_tokens": 931
+    }
+   ],
+   "summary": {
+    "sentences": 10,
+    "valid_json": 10,
+    "cut_at_max_tokens": 0,
+    "crashes": 0,
+    "reasoning_tokens_mean": 44.6,
+    "reasoning_tokens_max": 72,
+    "completion_tokens_max": 122,
+    "total_tokens": 9874
+   }
+  }
+ }
+}
