@@ -5,9 +5,7 @@ call. The rules are fixed and live only here. Anything they do not recognise is 
 stays pending until it expires, so a doubtful message never changes data.
 """
 import json
-import re
 import time
-import unicodedata
 from dataclasses import dataclass
 from typing import Any
 
@@ -19,6 +17,7 @@ from app.agent.prompts import CURRENCY_NAMES
 from app.db.models import Message, PendingAction
 from app.services.errors import ConflictError, ForbiddenError, NotFoundError, ServiceError
 from app.services.pending import CONFIRMATION_MINUTES, cancel_action, execute_action
+from app.textnorm import normalise
 from app.tools.dispatch import dumps
 
 MAX_WORDS = 4
@@ -28,22 +27,12 @@ YES_WORDS = {"اي", "ايه", "ايوه", "ايوا", "اه", "نعم", "اكي
 NO_WORDS = {"لا", "لاء", "الغي", "الغيها", "الغيه", "الغاء", "بلاش", "خليه", "خليها", "كنسل", "no", "nope", "cancel"}
 NEGATIONS = {"مو", "مش", "ما", "مانو", "مني", "ماني", "مابدي", "غير", "not"}  # "مو موافق" must never read as a yes
 
-_HAMZA = str.maketrans({"أ": "ا", "إ": "ا", "آ": "ا", "ٱ": "ا", "ؤ": "و", "ئ": "ي"})
-_PUNCTUATION = re.compile(r"[^\w\s]|_")
-
 REPLY_CANCELLED = "تمام، ما غيّرت شي."
 REPLY_EXPIRED = f"انتهت مهلة التأكيد ({CONFIRMATION_MINUTES} دقائق)، وما غيّرت شي. إذا لسا بدك، اطلبها من جديد."
 REPLY_NOT_FOUND = "هالمصروف ما عاد موجود، فما في شي لنفّذه."
 REPLY_ALREADY_DONE = "هالطلب منفَّذ من قبل، وما عاد في شي لنغيّره."
 REPLY_FORBIDDEN = "ما عاد عندك صلاحية لهالتغيير، وما غيّرت شي."
 REPLY_FAILED = "ما قدرت نفّذ هالتغيير، وما غيّرت شي."
-
-
-def normalise(text: str) -> str:
-    """Without diacritics, punctuation and hamza forms, in lower case, with single spaces."""
-    text = "".join(c for c in unicodedata.normalize("NFC", text)
-                   if unicodedata.category(c) not in ("Mn", "Cf") and c != "ـ")
-    return " ".join(_PUNCTUATION.sub(" ", text.translate(_HAMZA).lower()).split())
 
 
 def classify(message: str) -> str | None:

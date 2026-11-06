@@ -16,6 +16,7 @@ import pydantic
 from sqlalchemy.orm import Session
 
 from app.agent.context import ToolContext
+from app.db.categories import categories_in_text
 from app.services import budgets, expenses, pending, reports
 from app.services.errors import ServiceError
 from app.services.periods import resolve_period
@@ -26,8 +27,9 @@ log = logging.getLogger(__name__)
 
 UNKNOWN_EXPENSE_ID = "Unknown expense id: find it first with list_expenses or search_expenses."
 SEARCH_DEFAULT_PERIOD = "last_3_months"
-SEARCH_MIN_CANDIDATES = 5
-SEARCH_MAX_CANDIDATES = 10
+SEARCH_MEANING_CANDIDATES = 10
+SEARCH_CATEGORY_CANDIDATES = 5
+SEARCH_MAX_RESULTS = 10
 
 # tool_log.status has no separate value for these codes (§4).
 _LOG_STATUS = {"missing_fields": "invalid_args", "not_available": "error"}
@@ -160,22 +162,29 @@ def _search_expenses(args: A.SearchExpenses, ctx: ToolContext, deps: ToolDeps) -
                       {"date_key": {"$lte": int(span.end.strftime("%Y%m%d"))}}]}
     try:
         vector = deps.embedder.embed(args.query)
-        # More than the model asked for: with limit=1 the closest meaning hid the newest match (scenario S4).
-        candidates = min(max(args.limit, SEARCH_MIN_CANDIDATES), SEARCH_MAX_CANDIDATES)
-        hits = deps.vector_store.query("expenses", ctx, vector, n_results=candidates, where=where)
+        # A fixed number, whatever the model asks for: with limit=1 the closest meaning hid the newest match (S4).
+        hits = deps.vector_store.query("expenses", ctx, vector, n_results=SEARCH_MEANING_CANDIDATES, where=where)
     except Exception as exc:
         log.warning("search_expenses failed: %s", exc)
         raise ToolFailure("not_available", "Search by meaning is not available now; use list_expenses.") from exc
-    matches = []
+    found = {}
     for hit in hits:
         try:
             expense = expenses.get_expense(deps.session, ctx, int(hit["metadata"]["expense_id"]))
         except ServiceError:
             continue  # deleted since it was indexed, or outside the caller's scope
-        matches.append({**_brief(expense, with_member=ctx.is_manager), "distance": round(hit["distance"], 3)})
+        found[expense["id"]] = {**_brief(expense, with_member=ctx.is_manager), "distance": round(hit["distance"], 3),
+                                "match": "meaning"}
+    # Over 12 months the newest expense can sit outside the closest 10 by meaning; its category still reaches it.
+    for category in categories_in_text(args.query):
+        recent = expenses.list_expenses(deps.session, ctx, period="custom", start_date=span.start, end_date=span.end,
+                                        category=category, limit=SEARCH_CATEGORY_CANDIDATES)
+        for expense in recent["expenses"]:
+            found.setdefault(expense["id"], {**_brief(expense, with_member=ctx.is_manager), "distance": None,
+                                             "match": "category"})
     # Edits and deletions take the newest match (§6.4), which a ranking by meaning does not put first.
-    matches.sort(key=lambda row: (row["date"], row["id"]), reverse=True)
-    return {"matches": matches}
+    matches = sorted(found.values(), key=lambda row: (row["date"], row["id"]), reverse=True)
+    return {"matches": matches[:SEARCH_MAX_RESULTS]}
 
 
 def _check_budget(args: A.CheckBudget, ctx: ToolContext, deps: ToolDeps) -> dict:

@@ -60,7 +60,7 @@ TOOL_SCHEMAS = [
         "month_b": {"type": "string", "description": "YYYY-MM"},
         "category": _CATEGORY_OPT,
     }, ("month_a", "month_b")),
-    _tool("search_expenses", "Find expenses by meaning (shop, person, item), newest first.", {
+    _tool("search_expenses", "Find expenses by meaning or category word (shop, person, item), newest first.", {
         "query": {"type": "string"}, "period": _SEARCH_PERIOD, **_RANGE, "limit": _LIMIT,
     }, ("query",)),
     _tool("check_budget", "Spent, limit and remaining per category in a month.", {

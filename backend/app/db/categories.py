@@ -2,6 +2,7 @@
 
 Copied rather than imported, so that the baseline stays frozen (D12).
 """
+from app.textnorm import normalise
 
 CATEGORIES = [
     {
@@ -66,3 +67,19 @@ CATEGORIES = [
 
 CATEGORY_NAMES = [c["name_ar"] for c in CATEGORIES]
 SAVINGS_CATEGORY = "ادخار"
+
+
+def _stem(word: str) -> str:
+    """Without the definite article: the keywords say "كهربا" and users say "الكهربا"."""
+    return word[2:] if word.startswith("ال") and len(word) > 3 else word
+
+
+def _words(text: str) -> list[str]:
+    return [_stem(word) for word in normalise(text).split()]
+
+
+def categories_in_text(text: str) -> list[str]:
+    """The categories with a keyword in `text`, whole words only: "نت" must not match inside another word."""
+    words = set(_words(text))
+    return [c["name_ar"] for c in CATEGORIES
+            if any(set(_words(keyword)) <= words for keyword in c["keywords"])]

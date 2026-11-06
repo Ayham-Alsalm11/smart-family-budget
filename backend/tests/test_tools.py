@@ -5,7 +5,7 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import select
 
-from app.db.categories import CATEGORY_NAMES
+from app.db.categories import CATEGORY_NAMES, categories_in_text
 from app.db.models import Expense, PendingAction, utcnow
 from app.services import expenses
 from app.tools.dispatch import TOOLS, ToolDeps, dispatch
@@ -122,25 +122,96 @@ def add_for_search(session, ctx, embedder, store, days_ago, amount=1000):
                                 embedder=embedder, vector_store=store)["id"]
 
 
-def test_search_returns_five_candidates_even_for_limit_1(session, manager_ctx, fake_embedder, fake_store):
-    for days in range(7):
-        add_for_search(session, manager_ctx, fake_embedder, fake_store, days)
-    found = run(session, manager_ctx, "search_expenses", fake_embedder, fake_store, query="خبز", limit=1)
-    assert len(found.data["matches"]) == 5
-
-
-def test_search_returns_ten_candidates_at_most(session, manager_ctx, fake_embedder, fake_store):
+@pytest.mark.parametrize("limit", [1, 5, 20])
+def test_search_always_takes_ten_by_meaning_whatever_the_limit(session, manager_ctx, fake_embedder, fake_store, limit):
     for days in range(12):
         add_for_search(session, manager_ctx, fake_embedder, fake_store, days)
-    found = run(session, manager_ctx, "search_expenses", fake_embedder, fake_store, query="خبز", limit=20)
+    found = run(session, manager_ctx, "search_expenses", fake_embedder, fake_store, query="شي منسي", limit=limit)
     assert len(found.data["matches"]) == 10
 
 
-def test_a_limit_between_the_bounds_is_kept(session, manager_ctx, fake_embedder, fake_store):
-    for days in range(9):
+def add_without_vector(session, ctx, days_ago, category="بنزين ومواصلات", amount=1000):
+    """In the database but not among the closest by meaning, like the newest expense in scenario S4."""
+    return expenses.add_expense(session, ctx, amount=amount, category=category,
+                                expense_date=TODAY - timedelta(days=days_ago))["id"]
+
+
+def test_a_category_word_adds_its_newest_expenses(session, manager_ctx, fake_embedder, fake_store):
+    by_meaning = add_for_search(session, manager_ctx, fake_embedder, fake_store, 30)
+    recent = [add_without_vector(session, manager_ctx, days) for days in range(7)]
+    matches = run(session, manager_ctx, "search_expenses", fake_embedder, fake_store, query="بنزين").data["matches"]
+    ids = [m["id"] for m in matches]
+    assert ids[:5] == recent[:5], "the 5 newest of the category, newest first"
+    assert recent[5] not in ids and recent[6] not in ids and by_meaning in ids
+
+
+def test_a_match_says_where_it_came_from(session, manager_ctx, fake_embedder, fake_store):
+    by_meaning = add_for_search(session, manager_ctx, fake_embedder, fake_store, 3)
+    by_category = add_without_vector(session, manager_ctx, 1)
+    matches = run(session, manager_ctx, "search_expenses", fake_embedder, fake_store, query="البنزين").data["matches"]
+    rows = {m["id"]: m for m in matches}
+    assert (rows[by_category]["match"], rows[by_category]["distance"]) == ("category", None)
+    assert (rows[by_meaning]["match"], rows[by_meaning]["distance"]) == ("meaning", 0.1)
+
+
+def test_without_a_category_word_search_stays_by_meaning(session, manager_ctx, fake_embedder, fake_store):
+    add_for_search(session, manager_ctx, fake_embedder, fake_store, 3)
+    hidden = add_without_vector(session, manager_ctx, 1)
+    matches = run(session, manager_ctx, "search_expenses", fake_embedder, fake_store, query="شي منسي").data["matches"]
+    assert hidden not in [m["id"] for m in matches] and {m["match"] for m in matches} == {"meaning"}
+
+
+def test_an_expense_found_both_ways_appears_once_with_its_distance(session, manager_ctx, fake_embedder, fake_store):
+    both = add_for_search(session, manager_ctx, fake_embedder, fake_store, 1)  # the category is food
+    matches = run(session, manager_ctx, "search_expenses", fake_embedder, fake_store, query="خبز").data["matches"]
+    assert [m["id"] for m in matches] == [both]
+    assert (matches[0]["match"], matches[0]["distance"]) == ("meaning", 0.1)
+
+
+def test_search_returns_ten_results_at_most_and_keeps_the_newest(session, manager_ctx, fake_embedder, fake_store):
+    for days in range(10, 20):
         add_for_search(session, manager_ctx, fake_embedder, fake_store, days)
-    found = run(session, manager_ctx, "search_expenses", fake_embedder, fake_store, query="خبز", limit=7)
-    assert len(found.data["matches"]) == 7
+    newest = [add_without_vector(session, manager_ctx, days) for days in range(5)]
+    matches = run(session, manager_ctx, "search_expenses", fake_embedder, fake_store, query="بنزين").data["matches"]
+    assert len(matches) == 10 and [m["id"] for m in matches[:5]] == newest
+
+
+def test_category_results_stay_in_the_period(session, manager_ctx, fake_embedder, fake_store):
+    inside = add_without_vector(session, manager_ctx, 1)
+    outside = add_without_vector(session, manager_ctx, 200)
+    matches = run(session, manager_ctx, "search_expenses", fake_embedder, fake_store, query="بنزين").data["matches"]
+    ids = [m["id"] for m in matches]
+    assert inside in ids and outside not in ids
+    last_month = run(session, manager_ctx, "search_expenses", fake_embedder, fake_store, query="بنزين",
+                     period="last_month").data["matches"]
+    assert last_month == []
+
+
+def test_category_results_are_the_members_own(session, member_ctx, other_member_ctx, manager_ctx, fake_embedder, fake_store):
+    mine = add_without_vector(session, member_ctx, 2)
+    theirs = add_without_vector(session, other_member_ctx, 1)
+    boss = add_without_vector(session, manager_ctx, 0)
+    found = run(session, member_ctx, "search_expenses", fake_embedder, fake_store, query="بنزين").data["matches"]
+    assert [m["id"] for m in found] == [mine] and "member_id" not in found[0]
+    everyone = run(session, manager_ctx, "search_expenses", fake_embedder, fake_store, query="بنزين").data["matches"]
+    assert [m["id"] for m in everyone] == [boss, theirs, mine]
+
+
+def test_category_results_stay_in_the_family(session, manager_ctx, fake_embedder, fake_store):
+    from conftest import ctx_for, make_family, make_member
+    stranger = make_member(session, make_family(session), "stranger", "manager")
+    add_without_vector(session, ctx_for(stranger), 1)
+    assert run(session, manager_ctx, "search_expenses", fake_embedder, fake_store, query="بنزين").data["matches"] == []
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("بنزين", ["بنزين ومواصلات"]), ("البنزين", ["بنزين ومواصلات"]), ("الكهربا", ["فواتير"]), ("فاتورة الكهربا", ["فواتير"]),
+    ("أجار البيت", ["إيجار"]), ("اجار", ["إيجار"]), ("الصيدلية", ["صحة"]), ("الدكتور", ["صحة"]), ("خبز", ["أكل وشرب"]),
+    ("زيت السيارة", ["أكل وشرب", "بنزين ومواصلات"]), ("ماي شرب", ["أكل وشرب", "فواتير"]),
+    ("", []), ("شي منسي", []), ("انترنت", ["فواتير"]), ("منت", []), ("البيتزا", []), ("متفرقات", []),
+])
+def test_categories_in_text(text, expected):
+    assert categories_in_text(text) == expected
 
 
 def test_search_results_are_newest_first_and_keep_their_distance(session, manager_ctx, fake_embedder, fake_store):
@@ -148,7 +219,7 @@ def test_search_results_are_newest_first_and_keep_their_distance(session, manage
     oldest = add_for_search(session, manager_ctx, fake_embedder, fake_store, 9)
     first_today = add_for_search(session, manager_ctx, fake_embedder, fake_store, 0)
     second_today = add_for_search(session, manager_ctx, fake_embedder, fake_store, 0)
-    matches = run(session, manager_ctx, "search_expenses", fake_embedder, fake_store, query="خبز").data["matches"]
+    matches = run(session, manager_ctx, "search_expenses", fake_embedder, fake_store, query="شي منسي").data["matches"]
     assert [m["id"] for m in matches] == [second_today, first_today, middle, oldest], "by date, then by id"
     assert [m["date"] for m in matches] == sorted((m["date"] for m in matches), reverse=True)
     assert all(m["distance"] == 0.1 for m in matches)
