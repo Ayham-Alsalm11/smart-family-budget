@@ -77,7 +77,7 @@ expenses. Without `--reset` it only embeds the expenses that have no vector yet.
 
 ## Tests
 
-From the repository root (`pytest.ini` restricts collection to `backend/tests`):
+From the repository root (`pytest.ini` restricts collection to `backend/tests` and `eval/tests`):
 
 ```
 backend\.venv\Scripts\python -m pytest

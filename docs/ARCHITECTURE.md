@@ -2,7 +2,7 @@
 
 **Project:** Family Budget Agent (Graduation Project 2)
 **Author:** Ayham Al-Salem · **Supervisors:** Dr. Nisreen Sulayman, Eng. Zainab Baghdadi
-**Version:** 1.7 · 6 November 2026 · **Branch:** `gp2-agent` · Changes since 1.0 are listed in §14.
+**Version:** 1.8 · 6 November 2026 · **Branch:** `gp2-agent` · Changes since 1.0 are listed in §14.
 
 This document turns the methodology of *Report Part 1* (Chapter 4) into a specification that the code is written from. It records every architectural decision taken after Seminar 1. When the code and this document disagree, fix one of them; do not leave them out of sync.
 
@@ -85,11 +85,24 @@ smart-family-budget/
 │   ├── requirements.txt       # exact versions (==)
 │   └── Dockerfile
 ├── web/                       # React + Vite + TypeScript, Tailwind (RTL), Recharts
-├── eval/                      # evaluation DB generator, experiment runners, metrics, scorers
+├── eval/                      # runs in backend/.venv, except the three gp1_* scripts marked below
+│   ├── generate_eval_db.py    # the neutral records, then both databases (§9.2)
+│   ├── gp1_build.py           # GP1's database and ChromaDB, with GP1's own code (root venv, from baseline/)
+│   ├── questions.py           # the 10 numeric question types and their references in pandas (§9.1)
+│   ├── scoring.py             # the numeric scorer shared by both systems (§9.3)
+│   ├── run_rq2.py             # the RQ2 runner (§9.4)
+│   ├── gp1_answer.py          # GP1's side of RQ2 (root venv, from baseline/)
+│   ├── gp1_http.py            # logs GP1's requests inside its process; used by the two scripts around it
+│   ├── gp1_truncation.py      # one level of the truncation check (root venv, from baseline/)
+│   ├── check_truncation.py    # the truncation check of §3.1
+│   ├── requirements.txt       # pandas, on top of backend/requirements.txt
+│   └── tests/                 # pytest, no Groq
 ├── data/eval/                 # evaluation datasets (JSONL) + annotation guidelines
+│   └── generated/             # records, databases and ChromaDB of the evaluation (untracked)
+├── results/<run_id>/          # one run: small JSON and Markdown files only, no databases (tracked)
 ├── docs/                      # this file; GP1 report PDF moved here
 ├── gp2_docs/                  # kept where it is (already shared with the supervisors)
-├── pytest.ini                 # testpaths = backend/tests (never collect baseline/tests)
+├── pytest.ini                 # testpaths = backend/tests eval/tests (never collect baseline/tests)
 ├── docker-compose.yml
 ├── .env.example
 └── README.md                  # GP2 README; GP1's README moves to baseline/
@@ -119,7 +132,7 @@ smart-family-budget/
 | `src/chat/engine.py` | — (this is the fixed pipeline) | Stays only in `baseline/` |
 | `evaluation/` | 180 test sentences, scripts, charts, results | Stays in `baseline/evaluation/` |
 
-**The only change allowed inside `baseline/`** is two environment overrides in `config.py`, each with a comment:
+**The only change allowed inside `baseline/`** is environment overrides, each with a comment. The first two are in `config.py`:
 - `BASELINE_DB_PATH` → `DB_PATH` (and therefore `DATABASE_URL`).
 - `BASELINE_CHROMA_DIR` → `CHROMA_PERSIST_DIR`.
 
@@ -127,7 +140,15 @@ Without them set, GP1 behaves exactly as before. The RQ2 experiment sets both, s
 
 **Third override, added in step 8:** `BASELINE_LLM_MODEL`. GP1 hard-codes `llama-3.3-70b-versatile` in `src/llm/parser.py` and `src/chat/engine.py`, and Groq no longer serves it (D2). In RQ2, GP1 therefore runs with the agent's main model, so that both systems use the same model and only the architecture differs. Without the variable, GP1 keeps its original ID. GP1's thesis results (Llama 3.3 70B) stay as the historical record; the RQ2 numbers come from the new run.
 
-**Risk to check in step 8:** gpt-oss models spend part of `max_tokens` on reasoning. GP1's parser allows only `max_tokens=200`, so outputs could be cut before the JSON ends. A pilot run on 20 of GP1's sentences decides. If truncation appears, the override may also need GP1's reasoning effort, set to the same value as the agent's; that change would be documented here before the run.
+**Fourth override, added in step 8a:** `BASELINE_REASONING_EFFORT`, for the reason in the next paragraph. When set, `reasoning_effort` is added to GP1's request; when not set, the request does not change at all. RQ2 sets it to `low`, the agent's value, so that the two systems differ only in their architecture. GP1's `max_tokens` stay as they are: 200 in the parser and 500 in the engine.
+
+Both overrides are read in `config.py` (`GROQ_MODEL`, `REASONING_EFFORT`), and these are the lines changed for them, each under the comment "GP2: environment override for RQ2 (§3.1)":
+- `src/llm/parser.py`: the import from `config`; the default of `model` in `__init__`; `if REASONING_EFFORT:` and the line after it in `_call_llm`.
+- `src/chat/engine.py`: the import from `config`; `"model"` in the payload of `_call_llm`; `if REASONING_EFFORT:` and the line after it.
+
+`eval/tests/test_baseline_overrides.py` builds both requests in GP1's own environment, without sending them, and checks that without the variables each one is the original request.
+
+**Risk checked in step 8a:** gpt-oss models spend part of `max_tokens` on reasoning, and GP1's parser allows only `max_tokens=200`. **The risk is real, and `low` removes it.** Ten sentences spread evenly over GP1's dataset went through `parse_expense` on `gpt-oss-120b` (`results/gp1_truncation_20261106_163248/`): at the default level 6 of 10 were cut at 200 and only 5 gave valid JSON, with up to 198 reasoning tokens; at `low` none was cut and all 10 gave valid JSON, with at most 72 reasoning tokens and a largest completion of 122. Sample of 10, not the 20 first planned. At the default level GP1 would fail for a reason that has nothing to do with its architecture, so `BASELINE_REASONING_EFFORT=low` is required in RQ2. The engine's 500 is not fully safe even at `low` (§13).
 
 **Running the baseline:** from inside `baseline/` with the root environment, e.g. `cd baseline` then `..\venv\Scripts\python -m streamlit run app.py`. Running from the repository root fails on `from config import …`. `venv/` is not moved, because it contains absolute paths.
 
@@ -366,6 +387,8 @@ After the final reply, numbers in the text are extracted and checked against tha
 
 **One repair attempt** (`GROUNDING_REPAIR`, default true; it can be switched off for experiments). If the reply has unmatched numbers, the model is told: "Your reply has numbers that are not in the tool results: X, Y. Rewrite it using only numbers from the tool results, or call a tool to get them. If a number is not available, leave it out." The loop then continues, and the model may call a tool (§6.2). If numbers stay unmatched, the second reply stands and what remains is logged. For evaluation, `TurnResult` and `tool_log` (`grounding_repair`) keep the first reply, its unmatched numbers, whether a repair happened, and the unmatched numbers after it. Text written by the server is not checked.
 
+**Year corrected in code** (step 8a). Before the check, a date in the reply whose month and day match a date in the tool results, and whose year alone differs, takes the date of the results ("2024-11-04" for 2026-11-04), and `tool_log` gets a `year_corrected` row with both dates. `gpt-oss-120b` kept making this mistake, and each time it cost a repair request. A date stays as it is if the results or the user's message have it, and also if its month and day appear in the results under two years: then only the model knows which it meant, and the number check still catches a wrong year. `TurnResult.year_corrected` keeps the changes for evaluation.
+
 **Normalisation and tolerances** (from the step 5a false alarms):
 - Arabic-Indic digits, "," / "٬" and spaces between groups of three digits are normalised ("١٥ ٠٠٠" = 15000). "ألف / آلاف / تلاف / k" multiply by 1,000 and "مليون" by 1,000,000 ("15 ألف", "26k").
 - List numbering at the start of a line ("1." "2)") is ignored.
@@ -390,12 +413,12 @@ Every tool returns JSON: `{"ok": true, "data": …}` or `{"ok": false, "error": 
 | `get_total` | **period**, category, member | total in base currency, count | member filter: manager or "me" |
 | `get_breakdown` | **period**, by ∈ {category, member} | rows with totals and shares | `by=member`: manager |
 | `compare_months` | **month_a**, **month_b** (YYYY-MM), category | both totals, difference, change % | all (family level) |
-| `search_expenses` | **query**, period (default: the last 3 months), limit (default 5) | up to 10 expenses, **newest first**: hybrid search, below. Each has `match` (`meaning` or `category`) and `distance` (empty for `category`) | members: own only |
+| `search_expenses` | **query**, period (default: the last 3 months) | up to 10 expenses, **newest first**: hybrid search, below. Each has `match` (`meaning` or `category`) and `distance` (empty for `category`) | members: own only |
 | `check_budget` | category (all if omitted), period (a month: `this_month`, `last_month` or `YYYY-MM`; default `this_month`) | spent, limit, remaining, % used, status | all |
 | `set_budget` | **category**, **amount**, month (omit = recurring), currency | the stored limit | manager |
 | `ask_clarification` | **question**, **missing_fields** (free text, e.g. amount, category, expense) | ends the turn | all |
 
-**Hybrid search.** `search_expenses` always takes the closest 10 expenses by meaning. If a word of the query is a category keyword (`db/categories.py`, ignoring hamza forms and the article), it adds the 5 newest expenses of that category, in the same period and scope (the family, and the member for a member). Duplicates are removed, keeping the `meaning` row, and the newest 10 are returned. Over 12 months the newest expense can sit outside the closest 10 by meaning; the category still reaches it. `limit` is accepted and has no effect.
+**Hybrid search.** `search_expenses` always takes the closest 10 expenses by meaning. If a word of the query is a category keyword (`db/categories.py`, ignoring hamza forms and the article), it adds the 5 newest expenses of that category, in the same period and scope (the family, and the member for a member). Duplicates are removed, keeping the `meaning` row, and the newest 10 are returned. Over 12 months the newest expense can sit outside the closest 10 by meaning; the category still reaches it. The tool has no `limit` (removed in step 8a, when it no longer had any effect); a call that still sends one gets `invalid_args`.
 
 `list_expenses` is not in Report Part 1, Table 4.2. It is added because edits and deletions need a way to find the expense being referred to ("امسح آخر مصروف").
 
@@ -472,20 +495,29 @@ Every tool returns JSON: `{"ok": true, "data": …}` or `{"ok": false, "error": 
 |---|---|---|
 | `expenses.jsonl` | id, text, expected {amount, currency, category, date}, source, second_check | 300–400, incl. GP1's 160 |
 | `tool_cases.jsonl` | id, turns[], expected_calls[{tool, args}], expected_behavior ∈ {execute, ask, decline}, unclear_type | 150–200, about 50 unclear |
-| `numeric_questions.jsonl` | id, question, reference (computed by the generator) | ≥ 100 |
+| `numeric_questions.jsonl` | id, type, question, params, source; the reference is computed when a run starts | ≥ 100 |
+| `pilot_numeric_questions.jsonl` | the same fields, `source` = `pilot` | 10, one of each type; not part of the final set |
 | `correction_sequences.jsonl` | id, steps[{message, expected_call, correction?}] | sequences of up to 50 corrections |
 | `scenario_month.jsonl` | a month of realistic turns run by the student | replaces the family user study |
 
 - `source` ∈ {`written`, `generated_reviewed`}. Variations suggested by an LLM are allowed only after review by the student (Report Part 1, §4.4). Report Part 1 also says the test set is written by people only: results on `generated_reviewed` items are therefore reported separately, and the final report describes the split.
+- **Pilot questions** (`source` = `pilot`) were written by Claude Code to try the machinery in step 8a. They are never part of the final set, which the student writes in step 7; `eval/questions.py` refuses a pilot question in any file whose name does not start with `pilot_`. Their results say whether the experiment works, not how the systems compare.
+- **The 10 numeric types** (`eval/questions.py`): total of this month; category this month; total of last month; category last month; total of a month given by name or number (its latest occurrence not in the future); difference between this month and last month; remaining budget of a category this month; top category this month and its amount; category over the last 3 months; total of this week. Periods follow §7.4: the week starts on Saturday, and the last 3 months are the current month and the two before it.
 - Test items are fixed before any experiment and checked for overlap with the prompt examples.
 - About 20–30 % of the labels are checked by a second annotator (`second_check`).
 
 ### 9.2 Evaluation database (`eval/generate_eval_db.py`)
 
-- Fixed random seed. One synthetic family (two members) with 12 months of history, relative to the run date.
+- Fixed random seed. One synthetic family (two members) with 12 months of history: the current month up to the run date and the 11 before it. Fixed monthly income, rent on the 1st, three monthly bills, weekly groceries, and drawn expenses with short Syrian descriptions.
+- `--today` defaults to the real date. A month has about 26 expenses (297 on 6 November 2026); a generation takes about 13 minutes, nearly all of it GP1's embeddings, at about 2.3 s each.
+- **Neutral records first:** `data/eval/generated/records.json` holds the family, the members, the 12 categories with their `budget_percent`, and every expense. Both databases are built from this file, and the references are computed from it. `manifest.json` records the date, the seed, the number of expenses and the SHA-256 of the records file.
+- **Fairness (step 8a), so that the difference comes from how a system answers and not from features one of them lacks:**
+  - every expense is in one currency, the base currency `SYP_OLD`, without conversion, because GP1 has no currencies;
+  - no budget rows: a limit is income × `budget_percent` in both systems, because GP1 ignores the budgets table (P6);
+  - no question in RQ2 is about one member, because GP1 has no members.
 - The same records are written to:
-  - a database with the GP2 schema, and the GP2 evaluation collections in ChromaDB;
-  - a database with the GP1 schema at `BASELINE_DB_PATH`, and a separate GP1 ChromaDB at `BASELINE_CHROMA_DIR`, filled with GP1's own embedding text and metadata format.
+  - a database with the GP2 schema, and the GP2 evaluation collections through a local `PersistentClient` in `data/eval/generated/`, apart from the development collections;
+  - a database with the GP1 schema at `BASELINE_DB_PATH`, and a separate GP1 ChromaDB at `BASELINE_CHROMA_DIR`, built by `eval/gp1_build.py` in the root `venv` with GP1's own models and `store_expense_embedding`, so that the embedding text and the metadata have GP1's format.
 - **Dates:** GP1 always uses the real `date.today()`. The database is therefore generated on the day of the experiment, the experiment runs on that same day, and `AGENT_TODAY` is set to that date. Both systems then see the same "current month".
 - Reference answers are computed directly from the generated records with independent code (pandas), not through the tools. Otherwise the tools would be tested against themselves.
 
@@ -497,10 +529,16 @@ Every tool returns JSON: `{"ok": true, "data": …}` or `{"ok": false, "error": 
 | Argument accuracy | Exact match per argument (amount, category, currency, date, expense_id), as ArgEM in AISA-ArabicFC |
 | Task success | All expected calls correct and the final database state correct |
 | Clarification accuracy | Asked when it should, did not ask when it should not (precision / recall) |
-| Numeric answer accuracy | The reference number appears in the reply, after normalisation; same scorer for GP1 and the agent |
+| Numeric answer accuracy | The reference number appears in the reply, after normalisation; same scorer for GP1 and the agent, reported as **strict** and **lenient** (below) |
 | Grounding rate | Share of numbers in replies (answers and advice) that appear in tool results |
 | API failure rate | Requests that still failed after retries; **counted as wrong** |
-| Latency, LLM calls per message | From `llm_calls` and `tool_log` |
+| Latency, LLM calls per message | From `llm_calls` and `tool_log`; for GP1, from the request log (§9.4). Time spent waiting for the rate limit is reported apart |
+
+**The numeric scorer** (`eval/scoring.py`) is independent of both systems: it does not reuse the agent's grounding code, or it would change with the system it scores. It normalises Arabic digits, "," and spaces between thousands, "." between thousands ("182.500"), "ألف / آلاف / تلاف / k", "مليون", and the spoken "نص مليون", "ربع مليون", "مليون ونص" and "مليون و200 ألف". Dates and list numbering are removed, percentages never match, and signs are ignored, because a reply states the direction in words.
+- **strict:** a number in the reply equals the reference exactly.
+- **lenient:** a number equals the reference rounded, half up, to the precision the number is written with: "183 ألف" passes for 182,500, and "180 ألف" or a plain "183000" does not.
+
+Both are recorded, with all the numbers found and whether the reply had any. A failed item is wrong whatever its text says, because GP1 answers with its raw summary when the API fails, and that summary can hold the right number.
 
 ### 9.4 Experiments
 
@@ -513,7 +551,11 @@ Every tool returns JSON: `{"ok": true, "data": …}` or `{"ok": false, "error": 
 
 Every run writes `results/<run_id>/` with its configuration, model, git commit, per-item outputs and the summary. Requests are spaced to respect rate limits.
 
-**Running GP1 in RQ2:** the runner calls GP1 from inside `baseline/` with the root `venv`, `PYTHONIOENCODING=utf-8`, and the `BASELINE_*` variables set (paths and model). Ollama is warmed up first. Each item is wrapped in `try/except`, so a GP1 crash (e.g. A1) is recorded as a failure, as in GP1's own evaluation.
+**Running RQ2** (`eval/run_rq2.py`): for each question the agent answers first, as a new member with memory and corrections off, `AGENT_TODAY` = the database's date, on `gpt-oss-120b` at `low`; GP1 then answers. The run is refused unless the database was generated today, because GP1 uses the real date. It writes `config.json`, `items.jsonl`, `summary.json` and `summary.md`, and `--resume <run_id>` continues from the first missing item. After the daily quota, the database is generated again on the next day and the run resumes; each item keeps its own date, records hash and reference. A run works on its own copy of the databases, in `data/eval/generated/runs/`. If a question makes a system add an expense or a budget, that row is removed and reported, because the references assume the same records for every question.
+
+**Running GP1 in RQ2** (`eval/gp1_answer.py`): the runner calls GP1 from inside `baseline/` with the root `venv`, `PYTHONIOENCODING=utf-8`, and the four `BASELINE_*` variables set (paths, model and reasoning effort), one process per question. The key reaches it through its environment and is never printed. Ollama is warmed up first. Each item is wrapped in `try/except`, so a GP1 crash (e.g. A1) is recorded as a failure, as in GP1's own evaluation.
+
+**GP1's request log** (`eval/gp1_http.py`): GP1 throws each response away after reading its text, and `baseline/` may not change for this (D12), so `requests.post` is wrapped (monkeypatched) inside the runner's process only. It records usage, `finish_reason`, status and latency per request. The wrapper changes GP1's logic in nothing, with one addition: it waits when the minute's tokens are nearly gone, because GP1 has no limiter and a 429 caused by the pace of an experiment says nothing about the system.
 
 ### 9.5 Working within Groq's free tier (D14)
 
@@ -586,6 +628,8 @@ Fine-tuning · enterprise microservices (API gateway, message broker, one databa
 | Multi-turn scenarios (step 6) | **Both models ran all 10 scenarios (18 turns), with no 429 and no cut reply** (`scenarios_20261105_154708.json`, date 2026-11-04, `low`, `max_tokens` 600). Reviewed by hand, turn by turn: **`gpt-oss-120b` 15 correct, 2 partial, 1 wrong; `gpt-oss-20b` 9 correct, 5 partial, 4 wrong.** Both: S2, S3 and S6 are correct; "اي" deleted (S3) and "لا خليه" cancelled (S4) with no model call; a message in between stopped the confirmation (S5). **S4 is only half fixed:** both models now call `edit_expense`, but on the wrong expense (120b #45 of 2 Oct, 20b #7, an oil change, instead of the newest), because `search_expenses` ranks by meaning and not by date. The preview exposed it, and the user can refuse. **After "كم صرفنا اليوم؟" a later "اي" executed nothing, but both models called `delete_expense` again, which gave a new preview.** 120b: search without a period found the 6-week-old pharmacy expense (S7); `forbidden` with a kind refusal (S9); S10 answered through `compare_months` instead of `get_total`, with the right number. 20b: asked for an amount that was given (S1); **invented id 1 and previewed the rent (S5)**; **called `get_total` without a member and presented the family total as the father's (S9)**, which breaks no permission but is a wrong answer; used `get_breakdown` for a total and compared with September unasked (S10). **Repair:** once per model, both in S8. 120b removed all 5 invented numbers; 20b kept 15% and 15,000 and the second reply stood. **Tokens:** 120b 58,030 in 31 calls, 20b 50,773 in 28. **Largest completion 533** (120b, S8; 272 on 20b), close to the 600 limit. **Limiter:** waiting 5.6 s a call on 120b (max 14.6) and 8.6 on 20b (max 14.1), against 5.5 and 8.3 before the reservation grew: the average depends on the tokens spent, and the reservation only raises the level at which a request is let through. **Daily limit:** no sign of one. No 429 and no daily token header; about 163,000 tokens on 120b and 107,000 on 20b in the last 24 hours, so the reported 200,000 was not reached and stays unconfirmed. Prompt caching hit 13 of 31 calls on 120b and 2 of 28 on 20b |
 | Rerun after the fixes of step 6c | `scenarios_20261105_164310.json`: S1, S4, S5 and S6 on both models, `max_tokens` 800, no 429, no cut reply. 52,919 tokens (120b 27,606, 20b 25,313), about twice the 25,000 planned. **By hand: 120b 6 correct, 0 partial, 3 wrong (before: 7, 1, 1); 20b 6, 2, 1 (before: 5, 1, 3).** **The id check works:** on 20b, S5 tried the invented id 1, got `invalid_args`, listed, and previewed the right expense; "امسح التاني" was accepted from memory (S6). **S4 is still wrong on both models:** the right expense (#61, today) ranks 7th by meaning (distance 0.363), outside the 5 candidates, so newest-first sorts the other five and #45 of 2 Oct comes first. The preview exposed it, and "لا خليه" cancelled it. **New on 120b:** two empty replies, in S5's second turn and S6's second turn. The calls returned 25 and 37 tokens that are not reasoning, but no content and no tool call, so the user got "ما فهمت عليك". The raw response is not stored, so the cause is unknown; both turns worked in the run before, and no tool was called, so the id check is not involved. S6 therefore confirms memory ids on 20b only. A repair on 120b corrected the year 2024 to 2026 (S6). 20b still asks for an amount that was given (S1), which the new check now reports |
 | Rerun after the fixes of step 6d | `scenarios_20261106_152716.json`: S4, S5 and S6 on `gpt-oss-120b` only, `max_tokens` 800, no 429, no cut reply, 22,712 tokens in 12 calls. **By hand: 6 correct, 1 partial, 0 wrong (before, on these 7 turns: 4, 0, 3).** S4 is fixed on this model: the category word brought in #61, the newest fuel expense, and the preview showed it (5,000 → 6,000). A search now costs about 290 more prompt tokens in the next call, from up to 10 results. "امسح التاني" worked from memory in one call, which confirms memory ids on 120b too. After a message in between, a later "اي" still executed nothing, but the model again asked to delete the same (right) expense, which gave a new preview. **No empty reply in these 12 calls, so the cause of the two in step 6c is still unknown;** the details are now saved when one appears, and they rule out nothing yet. The model wrote the year 2024 again in S6, and the repair corrected it again. **Not measured:** `gpt-oss-20b` was not rerun after step 6d, so S4 is unconfirmed on it |
+| GP1's parser on gpt-oss-120b (step 8a) | **`low` is required.** `results/gp1_truncation_20261106_163248/`: 10 sentences, `max_tokens` 200. Default level: 6 cut at 200, 5 valid JSON, reasoning 147.8 on average (max 198), 10,687 tokens. `low`: 0 cut, 10 valid JSON, reasoning 44.6 on average (max 72), largest completion 122, 9,874 tokens. No crash and no 429 at either level. One sentence ("توفير هالشهر 25 ألف") is taken for advice at both levels, so that is not a matter of truncation |
+| RQ2 pilot (step 8a) | **The machinery works, on 10 pilot questions; this is not a result of RQ2.** `results/rq2_20261106_163418/`, 297 expenses, date 2026-11-06, both systems on `gpt-oss-120b` at `low`. **Agent 10 of 10, GP1 4 of 10,** strict and lenient alike, no 429. GP1 is right on the four types that need only the current month (total, category, remaining budget, top category), and wrong on the other six: for last month's total it gave this month's 223,500; for last month's fuel it answered 103,500 (reference 7,500); for July it said zero; for the difference and the week it asked for the data. All the references agree with a separate SQL query on both databases. **Agent:** 2.1 requests a question, 3,529 tokens, 2.33 s without limiter waits (6.5 s of waiting). `get_total` was once rejected with `tool_use_failed` for a `null` category and corrected in the same turn, so `null` still occurs (§7.1). No repair and no year correction was needed. **GP1:** 2 requests a question, 1,727 tokens, 5.73 s. **One GP1 reply was empty at `low` too:** the engine spent all 500 tokens on reasoning (498) on the 3-month bills question, which counts as its one failure. It was a technical failure and not an API error, and GP1 could not have answered that question from its summary anyway. It shows that the engine's 500 can run out, so the final run must report such cases apart. **Tokens:** 52,563 in 41 requests, or 73,124 with the truncation check. The planned 70,000 for the pilot was an overestimate. Remaining requests afterwards: 941 of 1,000. Still no sign of a daily token limit: about 123,000 recorded tokens in the last 24 hours on 120b, and the reported 200,000 stays unconfirmed |
 | Cost of the memory (step 6) | First call of a turn: **1,661 prompt tokens without memory; 1,728 with it on 120b and 1,724 on 20b** (6 turns, 2–4 messages), so about 65 tokens; the largest was 1,775. The 1,594 of step 5a2 became 1,661 from the changed prompt rules and schemas. The 600-token ceiling was not reached |
 | Laptop RAM for running `gpt-oss-20b` locally | Open (fallback only, §9.5) |
 | ChromaDB client and server versions | `chromadb` 1.5.7 in `backend/.venv` for client and server (`chroma run --path data\chroma --port 8001`). Heartbeat OK; `expenses` and `corrections` created with cosine distance (metadata and configuration). The server reports API version 1.0.0 |
@@ -598,6 +642,26 @@ Fine-tuning · enterprise microservices (API gateway, message broker, one databa
 ---
 
 ## 14. Changes
+
+### Version 1.8 (6 November 2026)
+
+Step 8a, the evaluation machinery of RQ2 and a small first run:
+- **§6.9:** the year of a date corrected in code, logged as `year_corrected`.
+- **§7.1:** `limit` removed from `search_expenses`.
+- **§3.1:** the fourth override, `BASELINE_REASONING_EFFORT`, the lines changed in `parser.py` and `engine.py`, and the result of the truncation check.
+- **§2, §9.1–§9.4:** `eval/`, `data/eval/generated/` and `results/`; the neutral records file; the fairness rules; the pilot questions, kept out of the final set; the strict and lenient scorer; GP1's runner and its request log.
+- **§13:** the truncation check and the RQ2 pilot.
+- **Decisions of the student for this step:** both systems run the same model at the same reasoning level, and GP1 keeps its `max_tokens`; the three fairness rules of §9.2; pilot questions written by Claude Code and marked `pilot`; references computed in pandas from the records only.
+- **Decisions taken in step 8a:**
+  - `limit` also left the argument model, so a call that sends it gets `invalid_args` instead of being ignored in silence.
+  - A year is not corrected if the same month and day are in the results under two years, or if the user wrote that date.
+  - The scorer does not reuse the grounding code, and it also reads the spoken forms of a million and "." between thousands.
+  - A failed item counts as wrong even when its text has the right number; a reply left empty by `max_tokens` counts as a failure.
+  - A question that makes a system write is undone and reported, and each run has its own copy of the databases.
+  - GP1's request wrapper waits when the minute's tokens are nearly gone, and the agent's limiter reserves 3,500 tokens before each GP1 process.
+  - GP1 runs in one process per question.
+  - The truncation check used the 10 sentences of the step's plan, not the 20 first written in §3.1, spread evenly over the dataset.
+  - The generator refuses to replace an earlier database without `--overwrite`.
 
 ### Version 1.7 (6 November 2026)
 
