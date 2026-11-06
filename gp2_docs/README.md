@@ -10,5 +10,5 @@ It builds on Graduation Project 1 (Smart Family Budget Assistant – Mizan), who
 - `family_budget_agent_architecture.png` – Proposed architecture
 - `family_budget_agent_flowchart.png` – Agent request-handling flowchart
 
-Author: Ayham Al-Salem · Supervisors: Dr. Nasreen Suleiman, Eng. Zainab Baghdadi
+Author: Ayham Al-Salem · Supervisors: Dr. Nisreen Sulayman, Eng. Zainab Baghdadi
 Syrian Private University – Faculty of Artificial Intelligence Engineering – 2026–2027

@@ -1,8 +1,8 @@
 # Family Budget Agent — Architecture Specification
 
 **Project:** Family Budget Agent (Graduation Project 2)
-**Author:** Ayham Al-Salem · **Supervisors:** Dr. Nasreen Suleiman, Eng. Zainab Baghdadi
-**Version:** 1.6 · 5 November 2026 · **Branch:** `gp2-agent` · Changes since 1.0 are listed in §14.
+**Author:** Ayham Al-Salem · **Supervisors:** Dr. Nisreen Sulayman, Eng. Zainab Baghdadi
+**Version:** 1.7 · 6 November 2026 · **Branch:** `gp2-agent` · Changes since 1.0 are listed in §14.
 
 This document turns the methodology of *Report Part 1* (Chapter 4) into a specification that the code is written from. It records every architectural decision taken after Seminar 1. When the code and this document disagree, fix one of them; do not leave them out of sync.
 
@@ -268,6 +268,7 @@ flowchart TD
 - Tool decisions use **temperature 0** (where the model accepts it) and **`reasoning_effort=low`** (§6.3). `max_tokens` = 800, which includes reasoning tokens.
 - An invalid call (unknown tool, missing or wrong-typed argument) is not executed. The validation error goes back to the model as the tool result and counts as a step.
 - **Rejected by the provider:** Groq checks tool calls against the schemas and rejects a broken one with HTTP 400 `tool_use_failed`. This is not a connection failure. The error goes back to the model in the same turn ("Your last tool call was rejected: … Fix the arguments or omit optional ones"), counts as a step, and is logged in `tool_log` as `invalid_args`. At most **2 corrections** per turn; after that the agent asks the user to rephrase (not "connection problem").
+- **Empty reply** (no content and no tool call): `llm_calls` records it as `empty`, and its `error` column keeps `finish_reason`, the length of the content and of the reasoning, and the names of any unexpected fields in the message, because the raw response is not stored. The model is then asked once: "Your last message was empty. Reply to the user or call a tool." This counts as a step, and there is no retry on the last step. A second empty reply leaves the fixed reply ("ما فهمت عليك"), or the first reply if this happened during a repair (§6.9).
 - `ask_clarification` ends the turn: its `question` is the reply.
 - `confirmation_required` ends the turn too: no further model call, and the server writes the reply (§6.5). Calls after it in the same step do not run.
 - One grounding repair per turn (§6.9). It counts in the 6 steps, and the model may call a tool during it. No repair is attempted on the last step. If the repair itself fails (step limit or LLM error), the first reply stands.
@@ -389,10 +390,12 @@ Every tool returns JSON: `{"ok": true, "data": …}` or `{"ok": false, "error": 
 | `get_total` | **period**, category, member | total in base currency, count | member filter: manager or "me" |
 | `get_breakdown` | **period**, by ∈ {category, member} | rows with totals and shares | `by=member`: manager |
 | `compare_months` | **month_a**, **month_b** (YYYY-MM), category | both totals, difference, change % | all (family level) |
-| `search_expenses` | **query**, period (default: the last 3 months), limit (default 5) | the closest `max(limit, 5)` expenses by meaning, at most 10, **newest first**, each with its `distance` | members: own only |
+| `search_expenses` | **query**, period (default: the last 3 months), limit (default 5) | up to 10 expenses, **newest first**: hybrid search, below. Each has `match` (`meaning` or `category`) and `distance` (empty for `category`) | members: own only |
 | `check_budget` | category (all if omitted), period (a month: `this_month`, `last_month` or `YYYY-MM`; default `this_month`) | spent, limit, remaining, % used, status | all |
 | `set_budget` | **category**, **amount**, month (omit = recurring), currency | the stored limit | manager |
 | `ask_clarification` | **question**, **missing_fields** (free text, e.g. amount, category, expense) | ends the turn | all |
+
+**Hybrid search.** `search_expenses` always takes the closest 10 expenses by meaning. If a word of the query is a category keyword (`db/categories.py`, ignoring hamza forms and the article), it adds the 5 newest expenses of that category, in the same period and scope (the family, and the member for a member). Duplicates are removed, keeping the `meaning` row, and the newest 10 are returned. Over 12 months the newest expense can sit outside the closest 10 by meaning; the category still reaches it. `limit` is accepted and has no effect.
 
 `list_expenses` is not in Report Part 1, Table 4.2. It is added because edits and deletions need a way to find the expense being referred to ("امسح آخر مصروف").
 
@@ -582,6 +585,7 @@ Fine-tuning · enterprise microservices (API gateway, message broker, one databa
 | Prompt caching on the free tier | **`cached_tokens` does appear above zero, but it did not lower the per-minute charge.** The same full request 3 times (prompt 1,588, completion 29, total 1,617), with the bucket refilled to 8,000 before each: `cached_tokens` 0, 0, 1,536 and `x-ratelimit-remaining-tokens` after each 6,360, 6,360, 6,360, so 1,640 tokens each time, cached or not. Latency did not change either (1.28, 1.37, 1.30 s). **Limits of this result:** one cached request in this test, plus one in the scenario (1,536 of 1,671) out of 11, so hits are irregular even for an identical prefix; and the identical header may be an estimate taken on admission, so a later correction cannot be excluded, and the effect on the daily limit is unknown. **Planning:** §9.5 keeps counting cached tokens in full |
 | Multi-turn scenarios (step 6) | **Both models ran all 10 scenarios (18 turns), with no 429 and no cut reply** (`scenarios_20261105_154708.json`, date 2026-11-04, `low`, `max_tokens` 600). Reviewed by hand, turn by turn: **`gpt-oss-120b` 15 correct, 2 partial, 1 wrong; `gpt-oss-20b` 9 correct, 5 partial, 4 wrong.** Both: S2, S3 and S6 are correct; "اي" deleted (S3) and "لا خليه" cancelled (S4) with no model call; a message in between stopped the confirmation (S5). **S4 is only half fixed:** both models now call `edit_expense`, but on the wrong expense (120b #45 of 2 Oct, 20b #7, an oil change, instead of the newest), because `search_expenses` ranks by meaning and not by date. The preview exposed it, and the user can refuse. **After "كم صرفنا اليوم؟" a later "اي" executed nothing, but both models called `delete_expense` again, which gave a new preview.** 120b: search without a period found the 6-week-old pharmacy expense (S7); `forbidden` with a kind refusal (S9); S10 answered through `compare_months` instead of `get_total`, with the right number. 20b: asked for an amount that was given (S1); **invented id 1 and previewed the rent (S5)**; **called `get_total` without a member and presented the family total as the father's (S9)**, which breaks no permission but is a wrong answer; used `get_breakdown` for a total and compared with September unasked (S10). **Repair:** once per model, both in S8. 120b removed all 5 invented numbers; 20b kept 15% and 15,000 and the second reply stood. **Tokens:** 120b 58,030 in 31 calls, 20b 50,773 in 28. **Largest completion 533** (120b, S8; 272 on 20b), close to the 600 limit. **Limiter:** waiting 5.6 s a call on 120b (max 14.6) and 8.6 on 20b (max 14.1), against 5.5 and 8.3 before the reservation grew: the average depends on the tokens spent, and the reservation only raises the level at which a request is let through. **Daily limit:** no sign of one. No 429 and no daily token header; about 163,000 tokens on 120b and 107,000 on 20b in the last 24 hours, so the reported 200,000 was not reached and stays unconfirmed. Prompt caching hit 13 of 31 calls on 120b and 2 of 28 on 20b |
 | Rerun after the fixes of step 6c | `scenarios_20261105_164310.json`: S1, S4, S5 and S6 on both models, `max_tokens` 800, no 429, no cut reply. 52,919 tokens (120b 27,606, 20b 25,313), about twice the 25,000 planned. **By hand: 120b 6 correct, 0 partial, 3 wrong (before: 7, 1, 1); 20b 6, 2, 1 (before: 5, 1, 3).** **The id check works:** on 20b, S5 tried the invented id 1, got `invalid_args`, listed, and previewed the right expense; "امسح التاني" was accepted from memory (S6). **S4 is still wrong on both models:** the right expense (#61, today) ranks 7th by meaning (distance 0.363), outside the 5 candidates, so newest-first sorts the other five and #45 of 2 Oct comes first. The preview exposed it, and "لا خليه" cancelled it. **New on 120b:** two empty replies, in S5's second turn and S6's second turn. The calls returned 25 and 37 tokens that are not reasoning, but no content and no tool call, so the user got "ما فهمت عليك". The raw response is not stored, so the cause is unknown; both turns worked in the run before, and no tool was called, so the id check is not involved. S6 therefore confirms memory ids on 20b only. A repair on 120b corrected the year 2024 to 2026 (S6). 20b still asks for an amount that was given (S1), which the new check now reports |
+| Rerun after the fixes of step 6d | `scenarios_20261106_152716.json`: S4, S5 and S6 on `gpt-oss-120b` only, `max_tokens` 800, no 429, no cut reply, 22,712 tokens in 12 calls. **By hand: 6 correct, 1 partial, 0 wrong (before, on these 7 turns: 4, 0, 3).** S4 is fixed on this model: the category word brought in #61, the newest fuel expense, and the preview showed it (5,000 → 6,000). A search now costs about 290 more prompt tokens in the next call, from up to 10 results. "امسح التاني" worked from memory in one call, which confirms memory ids on 120b too. After a message in between, a later "اي" still executed nothing, but the model again asked to delete the same (right) expense, which gave a new preview. **No empty reply in these 12 calls, so the cause of the two in step 6c is still unknown;** the details are now saved when one appears, and they rule out nothing yet. The model wrote the year 2024 again in S6, and the repair corrected it again. **Not measured:** `gpt-oss-20b` was not rerun after step 6d, so S4 is unconfirmed on it |
 | Cost of the memory (step 6) | First call of a turn: **1,661 prompt tokens without memory; 1,728 with it on 120b and 1,724 on 20b** (6 turns, 2–4 messages), so about 65 tokens; the largest was 1,775. The 1,594 of step 5a2 became 1,661 from the changed prompt rules and schemas. The 600-token ceiling was not reached |
 | Laptop RAM for running `gpt-oss-20b` locally | Open (fallback only, §9.5) |
 | ChromaDB client and server versions | `chromadb` 1.5.7 in `backend/.venv` for client and server (`chroma run --path data\chroma --port 8001`). Heartbeat OK; `expenses` and `corrections` created with cosine distance (metadata and configuration). The server reports API version 1.0.0 |
@@ -594,6 +598,21 @@ Fine-tuning · enterprise microservices (API gateway, message broker, one databa
 ---
 
 ## 14. Changes
+
+### Version 1.7 (6 November 2026)
+
+Step 6d:
+- **§7.1:** hybrid search by meaning and by category, with `match` in each result. This replaces "at least 5 candidates" of version 1.6.
+- **§6.2:** one retry after an empty reply, and what such a reply held is saved in `llm_calls`.
+- **§13:** results of the rerun on `gpt-oss-120b`.
+- **Header:** the supervisor's name is Dr. Nisreen Sulayman, also corrected in `gp2_docs/README.md` and in `Family_Budget_Agent_Report_Part1.docx`. The two PDF reports (Report Part 1 and the GP1 report) still show the old spelling: the first needs a new export from Word, and the second is the submitted GP1 report.
+- **Decisions of step 6c, now accepted:** only a marked number in the user's message is an id; from memory only `tool_summary` counts; a section in the first docstring of every file; the widened and stricter scenario checks; `smoke_groq.py` stays as it is.
+- **Decisions taken in step 6d:**
+  - An expense found both ways stays as `meaning`, with its distance.
+  - The keyword match ignores hamza forms and the article; a word with an attached "و" or "ب" does not match.
+  - `limit` stays in the schema and has no effect on search.
+  - The details of an empty reply go to the existing `llm_calls.error` column, with status `empty`, so that no database rebuild was needed.
+  - `normalise` moved to `app/textnorm.py`, because `agent/confirm.py` imports the tools and the tools now need it.
 
 ### Version 1.6 (5 November 2026)
 
