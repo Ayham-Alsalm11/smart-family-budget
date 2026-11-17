@@ -1,0 +1,13 @@
+/*
+ * Styles of the web interface (docs/ARCHITECTURE.md §10, decisions B and E): Tailwind, the local Arabic font,
+ * a light background and one accent colour (teal), used through Tailwind's own teal classes.
+ */
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "IBM Plex Sans Arabic", ui-sans-serif, system-ui, sans-serif;
+}
+
+body {
+  @apply bg-slate-50 text-slate-800 antialiased;
+}
