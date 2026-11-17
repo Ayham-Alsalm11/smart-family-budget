@@ -8,6 +8,7 @@ import { Navigate, Route, Routes, useNavigate } from "react-router";
 import { setUnauthorizedHandler } from "./api/client";
 import RequireAuth from "./auth/RequireAuth";
 import AppLayout from "./components/AppLayout";
+import ChatPage from "./pages/ChatPage";
 import JoinPage from "./pages/JoinPage";
 import LoginPage from "./pages/LoginPage";
 import RegisterPage from "./pages/RegisterPage";
@@ -26,7 +27,7 @@ export default function App() {
       <Route path="/join" element={<JoinPage />} />
       <Route element={<RequireAuth />}>
         <Route element={<AppLayout />}>
-          <Route path="/chat" element={<p className="p-6 text-slate-500">المحادثة قيد البناء.</p>} />
+          <Route path="/chat" element={<ChatPage />} />
         </Route>
       </Route>
       <Route path="*" element={<Navigate to="/chat" replace />} />
