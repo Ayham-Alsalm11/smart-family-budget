@@ -2,7 +2,7 @@
 
 **Project:** Family Budget Agent (Graduation Project 2)
 **Author:** Ayham Al-Salem · **Supervisors:** Dr. Nisreen Sulayman, Eng. Zainab Baghdadi
-**Version:** 1.8 · 6 November 2026 · **Branch:** `gp2-agent` · Changes since 1.0 are listed in §14.
+**Version:** 1.9 · 17 November 2026 · **Branch:** `gp2-agent` · Changes since 1.0 are listed in §14.
 
 This document turns the methodology of *Report Part 1* (Chapter 4) into a specification that the code is written from. It records every architectural decision taken after Seminar 1. When the code and this document disagree, fix one of them; do not leave them out of sync.
 
@@ -84,7 +84,14 @@ smart-family-budget/
 │   ├── .env                   # GROQ_API_KEY, JWT_SECRET (untracked, never printed or committed)
 │   ├── requirements.txt       # exact versions (==)
 │   └── Dockerfile
-├── web/                       # React + Vite + TypeScript, Tailwind (RTL), Recharts
+├── web/                       # React interface, first version in step 9a (web/README.md)
+│   ├── src/api/client.ts      # the only file that calls the backend: one function per path; errors → Arabic text
+│   ├── src/auth/              # the token in localStorage, the account rules of §5, the route guard
+│   ├── src/pages/             # LoginPage, RegisterPage, JoinPage, ChatPage, with their tests
+│   ├── src/components/        # AppLayout, ConfirmationCard, AgentSteps, AlertBar, MarkdownText, form parts; tests
+│   ├── src/test/              # Vitest setup and the fake fetch (no backend, no Groq)
+│   ├── package.json           # exact versions; package-lock.json is committed
+│   └── .env.example           # VITE_API_URL only, never a secret
 ├── eval/                      # runs in backend/.venv, except the three gp1_* scripts marked below
 │   ├── generate_eval_db.py    # the neutral records, then both databases (§9.2)
 │   ├── gp1_build.py           # GP1's database and ChromaDB, with GP1's own code (root venv, from baseline/)
@@ -577,8 +584,8 @@ Every run writes `results/<run_id>/` with its configuration, model, git commit, 
 
 ## 10. Web interface (React)
 
-- **Stack:** React + Vite + TypeScript, Tailwind CSS with `dir="rtl"`, Recharts. Library versions are pinned at setup.
-- **Pages:**
+- **Stack:** React + Vite + TypeScript, Tailwind CSS with `dir="rtl"`, React Router and react-markdown; Recharts comes with the dashboard in step 9. Every version is pinned exactly in `web/package.json`, with `package-lock.json` committed.
+- **Pages (the plan):**
   - Login / create family / join with code.
   - **Chat** with confirm and cancel buttons and a collapsible **agent steps** panel.
   - **Dashboard:** income, spent, remaining, category bars against limits, alerts, goals.
@@ -587,6 +594,54 @@ Every run writes `results/<run_id>/` with its configuration, model, git commit, 
   - **Goals.**
   - **Family:** members, invites, roles, income, USD rate.
 - **Visibility:** the UI hides what a role cannot do, but the server is the authority (§5).
+
+**Decisions of step 9a**
+- **A. Simple first,** because the student explains this code to the committee: no Redux or other state library;
+  one file, `src/api/client.ts`, holds every request; each page loads its own data; folders `src/api`, `src/auth`,
+  `src/pages` and `src/components`.
+- **B. Arabic, right to left everywhere** (`<html lang="ar" dir="rtl">`), with IBM Plex Sans Arabic from the
+  `@fontsource` package, bundled with the app and never fetched from the internet.
+- **C. The token (JWT) is kept in `localStorage`,** and any 401 on a request that carried it clears it and opens the
+  login page. This is acceptable here because React escapes every text it renders and replies are shown without raw
+  HTML (D), so no injected script can read it; and the token only says who the member is: every permission is checked
+  on the server (§5, D7).
+- **D. Replies are simple Markdown** through react-markdown: bold, lists and lines. Raw HTML is dropped, and any other
+  element, links included, is reduced to its text.
+- **E. The app is called "ميزان"**, and the page title is "ميزان — مساعد ميزانية العائلة": a light background, one accent
+  colour (teal), rounded corners, and a layout that works at phone width.
+
+**Built in step 9a**
+- **Account pages:** login (username and password); create a family (family name, monthly income, base currency in
+  Arabic, display name, username, password); join with an invite code. The rules of §5 are checked before sending,
+  with clear messages, and the server stays the authority. After success the token is saved and the chat opens.
+- **Frame:** a top bar with "ميزان", the family, the member, a role badge ("مسؤول" or "فرد") and a logout button;
+  navigation with the chat, and "لوحة الشهر", "المصاريف" and "العائلة" greyed out as "قريباً".
+- **API client:** one function per path used here (`/auth/register-family`, `/auth/join`, `/auth/login`, `/me`, `/chat`,
+  `/messages`, `/actions/{id}/confirm`, `/actions/{id}/cancel`). The error shape of §8 becomes one Arabic message:
+  401 a new login (a failed login says the password or username is wrong), 403 "هذه المعلومة متاحة لمسؤول العائلة فقط",
+  409 the server's message, 422 the server's message when it is Arabic, otherwise the fields by their Arabic names,
+  429 "تم قفل الدخول مؤقتاً" with the server's waiting time, 503 "المساعد متوقف حالياً", and a network failure
+  "تعذّر الاتصال بالخادم".
+- **Chat:** the earlier messages from `GET /messages`; user and agent messages in two clear styles; a box where Enter
+  sends and Shift+Enter starts a line, with the 1,000-character limit and a counter; "ميزان يكتب…" while waiting, with
+  sending disabled; three examples to click when there is no conversation yet.
+- **Alerts:** each alert of a reply as a bar above it, amber from 80 % of a limit and red from 100 %.
+- **Confirmation card** under a reply with `pending_action`: the expense, the change for an edit, "ينتهي هذا الطلب خلال
+  10 دقائق", and the buttons "تأكيد" and "إلغاء" (§6.5). Afterwards the card is disabled and shows the outcome. A 409
+  shows "انتهت مهلة التأكيد", or that the action already ran or was cancelled, when «اي» or «لا» in the chat came first;
+  answering in the chat stays possible. After a network error the buttons come back, because the action may still be
+  pending.
+- **Agent steps:** under each reply, a panel folded by default with every tool call: name, status in colour (`ok`
+  green, `confirmation_required` yellow, `forbidden` and `invalid_args` red), time and arguments as small JSON.
+- **Tests:** 31 Vitest tests with React Testing Library and a fake `fetch`: the client, the account pages, the chat,
+  the card and the steps panel.
+- **No backend change was needed:** `CORS_ORIGINS` already defaults to `http://localhost:5173`.
+
+**Known limit:** steps, alerts and cards exist only for the replies of the current visit, because `/messages` keeps the
+text alone. A pending action from an earlier visit can still be answered with «اي» or «لا» in the chat.
+
+**Left for step 9:** the dashboard (with Recharts), the expenses table with edit and delete, budgets, goals and the
+family page (members, invites, roles, income, USD rate), and their API calls in `client.ts`.
 
 ---
 
@@ -634,7 +689,7 @@ Fine-tuning · enterprise microservices (API gateway, message broker, one databa
 | Laptop RAM for running `gpt-oss-20b` locally | Open (fallback only, §9.5) |
 | ChromaDB client and server versions | `chromadb` 1.5.7 in `backend/.venv` for client and server (`chroma run --path data\chroma --port 8001`). Heartbeat OK; `expenses` and `corrections` created with cosine distance (metadata and configuration). The server reports API version 1.0.0 |
 | Ollama with `bge-m3` | Ollama 0.32.3, 1024-dimensional vectors. Warm-up with the model unloaded: 12.2 s; next request 0.5 s. `GET /health`: database, ChromaDB and Ollama `ok` |
-| Node.js and npm | Not installed; needed before step 9 |
+| Node.js and npm | **Installed** (step 9a, 17 November 2026): Node.js 26.13, npm 11.20 |
 | Docker | Not installed; needed before step 10 |
 | Ollama reachable from the `agent-api` container | Open (step 10) |
 | *(Priority 4)* Hijri date library | Open |
@@ -642,6 +697,24 @@ Fine-tuning · enterprise microservices (API gateway, message broker, one databa
 ---
 
 ## 14. Changes
+
+### Version 1.9 (17 November 2026)
+
+Step 9a, the first version of the web interface:
+- **§2:** the files of `web/`.
+- **§10:** the stack as built, the decisions A–E, what was built, the known limit of earlier messages, and what is left
+  for step 9.
+- **§13:** Node.js and npm installed.
+- **Decisions taken in step 9a:**
+  - Exact versions, the latest stable on 17 November 2026; among them TypeScript 7.0.2 and React Router 8.5.1.
+  - No backend change.
+  - A 401 on the login page means a wrong username or password, not an ended session.
+  - A 409 on the confirmation card names the action's state from the server's text: expired, already confirmed or
+    already cancelled.
+  - Earlier messages are shown as text only.
+  - Replies allow only paragraphs, bold, italics, lists and line breaks, and a single newline is a line break.
+  - The base currency in the form defaults to the server's default, the new Syrian pound.
+  - The member's messages are on the right, the agent's on the left.
 
 ### Version 1.8 (6 November 2026)
 

@@ -36,6 +36,18 @@ Each in its own terminal, from `backend\`:
    Without ChromaDB or Ollama the API still runs and search by meaning answers `not_available`. Without
    `GROQ_API_KEY`, `/chat` answers 503.
 
+## Running with the web interface
+
+With the API running as above (port 8000), start the React interface in a second terminal, from `web\`:
+
+```
+npm ci
+npm run dev
+```
+
+`npm ci` is needed once. Open **http://localhost:5173**, the origin the API allows by default (`CORS_ORIGINS`). The
+manual check list for the interface is in [../web/README.md](../web/README.md).
+
 ## Trying the API with curl (Windows `cmd`)
 
 Register a family; the reply has an `access_token`:
